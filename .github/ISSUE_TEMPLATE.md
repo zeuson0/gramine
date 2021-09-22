@@ -12,7 +12,7 @@ if you have questions, please use mailing list: support@graphene-project.io
 ## Steps to reproduce
 <!-- NOTE: please specify the exact commit ID on which you reproduced the issue
 
-### PLEASE ENSURE THAT THE ISSUE REPRODUCES ON THE CURRENT MASTER BRANCH ###
+@@@ PLEASE ENSURE THAT THE ISSUE REPRODUCES ON THE CURRENT MASTER BRANCH @@@
 
 -->
 
