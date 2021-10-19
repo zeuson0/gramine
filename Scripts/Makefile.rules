@@ -124,7 +124,7 @@ quiet_cmd_cmulti = [ $@ ]
 
 # sgx sign
 quiet_cmd_sgx_sign = [ $*.{sig, manifest.sgx} ]
-      cmd_sgx_sign = gramine-sgx-sign --key $(SGX_SIGNER_KEY) --output $*.manifest.sgx --manifest $< > .output.sgx_sign.$*
+      cmd_sgx_sign = gramine-sgx-sign --key $(SGX_SIGNER_KEY) --output $*.manifest.sgx --depfile $*.manifest.sgx.d --manifest $< > .output.sgx_sign.$*
 
 # sgx token
 quiet_cmd_sgx_get_token = [ Token: $(basename $*) ]

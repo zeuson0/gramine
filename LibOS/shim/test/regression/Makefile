@@ -121,13 +121,21 @@ repo_manifests = \
 gen_manifests = $(addsuffix .manifest,$(c_executables) $(cxx_executables-$(ARCH)))
 all_manifests = $(repo_manifests) $(gen_manifests)
 
+all_sgx =
+ifeq ($(SGX),1)
+	all_sgx += $(addsuffix .sig,$(patsubst %.manifest,%,$(all_manifests)))
+	all_sgx += $(addsuffix .manifest.sgx,$(patsubst %.manifest,%,$(all_manifests)))
+	all_sgx += $(addsuffix .token,$(patsubst %.manifest,%,$(all_manifests)))
+endif
+
 exec_target = \
 	$(c_executables) \
 	$(cxx_executables-$(ARCH))
 
 target = \
 	$(exec_target) \
-	$(all_manifests)
+	$(all_manifests) \
+	$(all_sgx)
 
 clean-extra += clean-tmp
 

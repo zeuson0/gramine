@@ -40,7 +40,7 @@ def uri2path(uri):
 def append_tf(trusted_files, uri, hash_):
     trusted_files.append({'uri': uri, 'sha256': hash_})
 
-def append_trusted_dir_or_file(trusted_files, val):
+def append_trusted_dir_or_file(trusted_files, val, expanded):
     if isinstance(val, dict):
         uri = val['uri']
         if val.get('sha256'):
@@ -59,9 +59,11 @@ def append_trusted_dir_or_file(trusted_files, val):
             raise ManifestError(f'Directory URI ({uri}) does not end with "/"')
         for sub_path in sorted(filter(pathlib.Path.is_file, path.rglob('*'))):
             append_tf(trusted_files, f'file:{sub_path}', hash_file_contents(sub_path))
+            expanded.append(sub_path)
     else:
         assert path.is_file()
         append_tf(trusted_files, uri, hash_file_contents(path))
+        expanded.append(path)
 
 class Manifest:
     """Just a representation of a manifest.
@@ -169,13 +171,18 @@ class Manifest:
         of them (skipping these which already had a hash present) and updates ``sgx.trusted_files``
         manifest entry with the result.
 
+        Returns a list of expanded files, i.e. files that did not have a hash in the original
+        manifest, or were only present as a directory.
+
         Raises:
             ManifestError: There was an error with the format of some trusted files in the manifest
                 or some of them could not be loaded from the filesystem.
+
         """
         trusted_files = []
+        expanded = []
         for tf in self['sgx']['trusted_files']:
-            append_trusted_dir_or_file(trusted_files, tf)
+            append_trusted_dir_or_file(trusted_files, tf, expanded)
 
         preloads = set(filter(None, self['loader']['preload'].split(',')))
         # remove all preloads that were already expanded
@@ -183,31 +190,7 @@ class Manifest:
             preloads.discard(tf['uri'])
 
         for uri in sorted(preloads):
-            append_trusted_dir_or_file(trusted_files, uri)
+            append_trusted_dir_or_file(trusted_files, uri, expanded)
 
         self['sgx']['trusted_files'] = trusted_files
-
-    def get_dependencies(self):
-        """Generate list of files which this manifest depends on.
-
-        Collects all trusted files that are not yet expanded (do not have a hash in the entry) and
-        all files from ``loader.preload`` entry and returns them.
-
-        Returns:
-            list(pathlib.Path): List of paths to the files this manifest depends on.
-
-        Raises:
-            ManifestError: One of the found URIs is in an unsupported format.
-        """
-        deps = set()
-
-        preload_str = self['loader']['preload']
-        # `filter` below is needed for the case where preload_str == '' (`split` returns [''] then)
-        for uri in filter(None, preload_str.split(',')):
-            deps.add(uri2path(uri))
-
-        for tf in self['sgx']['trusted_files']:
-            if not tf.get('sha256'):
-                deps.add(uri2path(tf['uri']))
-
-        return deps
+        return expanded

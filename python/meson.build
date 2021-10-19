@@ -1,7 +1,6 @@
 subdir('graminelibos')
 
 install_data([
-    'gramine-gen-depend',
     'gramine-manifest',
 ], install_dir: get_option('bindir'))
 

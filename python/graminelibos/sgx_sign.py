@@ -16,10 +16,10 @@ from . import _offsets as offs # pylint: disable=import-error,no-name-in-module
 from .manifest import Manifest
 from .sigstruct import Sigstruct
 
-
 # Default / Architectural Options
 
 ARCHITECTURE = 'amd64'
+SGX_LIBPAL = os.path.join(_CONFIG_PKGLIBDIR, 'sgx/libpal.so')
 
 # Utilities
 
@@ -442,13 +442,10 @@ def generate_measurement(enclave_base, attr, areas):
     return mrenclave.digest()
 
 
-def get_mrenclave_and_manifest(manifest_path, libpal=None):
+def get_mrenclave_and_manifest(manifest_path, libpal):
     with open(manifest_path, 'rb') as f: # pylint: disable=invalid-name
         manifest_data = f.read()
     manifest = Manifest.loads(manifest_data.decode('utf-8'))
-
-    if not libpal:
-        libpal = os.path.join(_CONFIG_PKGLIBDIR, 'sgx/libpal.so')
 
     manifest_sgx = manifest['sgx']
     attr = {
@@ -505,7 +502,7 @@ def get_mrenclave_and_manifest(manifest_path, libpal=None):
     return mrenclave, manifest
 
 
-def get_tbssigstruct(manifest_path, date, libpal=None):
+def get_tbssigstruct(manifest_path, date, libpal):
     """Generate To Be Signed Sigstruct (TBSSIGSTRUCT).
 
     Generates a Sigstruct object using the provided data with all required fields initialized (i.e.
@@ -514,7 +511,7 @@ def get_tbssigstruct(manifest_path, date, libpal=None):
     Args:
         manifest_path (str): Path to the manifest file.
         date (date): Date to put into SIGSTRUCT.
-        libpal (:obj:`str`, optional): Path to the libpal file.
+        libpal (:obj:`str`): Path to the libpal file.
 
     Returns:
         Sigstruct: SIGSTRUCT generated from provided data.

@@ -12,7 +12,7 @@ from graminelibos import Sigstruct, get_token
 @click.option('--output', '-o', type=click.File('wb'), required=True, help='Output token file')
 def main(sig, output):
     sig = Sigstruct.from_bytes(sig.read())
-    token = get_token(sig)
+    token = b'zzz' # get_token(sig)
     output.write(token)
 
 if __name__ == '__main__':

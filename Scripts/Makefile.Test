@@ -37,10 +37,7 @@ manifest_rules = \
 	$(extra_rules)
 
 ifeq ($(filter %clean,$(MAKECMDGOALS)),)
-include $(wildcard *.d)
-ifeq ($(SGX),1)
-include $(addsuffix .manifest.sgx.d,$(patsubst %.manifest,%,$(all_manifests)))
-endif
+-include $(wildcard *.d)
 endif
 
 .PHONY: clean
