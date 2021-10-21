@@ -1,0 +1,74 @@
+#!/usr/bin/env python3
+
+from io import StringIO
+import os
+
+import ninja_syntax
+import toml
+
+ARCH_LIBDIR = '/lib/x86_64-linux-gnu/'
+KEY = '/leeroy/gramine/Pal/src/host/Linux-SGX/signer/enclave-key.pem'
+
+
+ninja = ninja_syntax.Writer(StringIO())
+
+ninja.comment('Auto-generated, do not edit!')
+ninja.newline()
+
+ninja.variable('ARCH_LIBDIR', ARCH_LIBDIR)
+ninja.variable('KEY', KEY)
+ninja.newline()
+
+ninja.rule(
+    name='manifest',
+    command='gramine-manifest -Darch_libdir=$ARCH_LIBDIR -Dentrypoint=$ENTRYPOINT $in $out',
+    description='manifest: $out'
+)
+ninja.newline()
+
+ninja.rule(
+    name='sgx-sign',
+    command='gramine-sgx-sign --manifest $in --key $KEY --depfile $out.d --output $out >/dev/null',
+    depfile='$out.d',
+    description='SGX sign: $out',
+)
+ninja.newline()
+
+ninja.rule(
+    name='sgx-get-token',
+    command='gramine-sgx-get-token --sig $in --output $out',
+    description='SGX token: $out',
+)
+ninja.newline()
+
+config = toml.load('tests.toml')
+
+manifests = config['manifests'] + config['arch']['x86_64']['manifests'] + config['host']['sgx']['manifests']
+
+for name in manifests:
+    template = f'{name}.manifest.template'
+    if not os.path.exists(template):
+        template = 'manifest.template'
+
+    ninja.build(
+        outputs=[f'{name}.manifest'],
+        rule='manifest',
+        inputs=[template],
+        variables={'ENTRYPOINT': name},
+    )
+
+    ninja.build(
+        outputs=[f'{name}.manifest.sgx'],
+        implicit_outputs=[f'{name}.sig'],
+        rule='sgx-sign',
+        inputs=[f'{name}.manifest'],
+    )
+
+    ninja.build(
+        outputs=[f'{name}.token'],
+        rule='sgx-get-token',
+        inputs=[f'{name}.sig'],
+    )
+    ninja.newline()
+
+print(ninja.output.getvalue())
