@@ -5,26 +5,40 @@ import platform
 import subprocess
 import sys
 
-from . import ninja_syntax
+from . import ninja_syntax, _CONFIG_PKGLIBDIR
 
 import toml
 
+
+def get_list(data, *keys):
+    for key in keys:
+        if key not in data:
+            return []
+        data = data[key]
+    return data
+
+
 class TestConfig:
     def __init__(self, path):
+        self.config_path = path
+
         data = toml.load(path)
-        self.manifests = []
-        if 'manifests' in data:
-            self.manifests += data['manifests']
+
+        self.manifests = get_list(data, 'manifests')
 
         arch = platform.processor()
-        if arch in data and 'manifests' in data[arch]:
-            self.manifests += data[arch]['manifests']
+        self.manifests += get_list(data, 'arch', arch, 'manifests')
 
-        self.sgx_manifests = []
-        if 'sgx' in data and 'sgx' in data[arch]:
-            self.sgx_manifests = data['sgx']['manifests']
+        self.sgx_manifests = get_list(data, 'sgx', 'manifests')
 
         self.all_manifests = self.manifests + self.sgx_manifests
+
+        binary_install_dir = data.get('binary_install_dir')
+        if binary_install_dir:
+            self.binary_path = os.path.join(_CONFIG_PKGLIBDIR, binary_install_dir)
+        else:
+            self.binary_path = None
+        self.no_binary = set(get_list(data, 'no_binary'))
 
         self.arch_libdir = '/lib/x86_64-linux-gnu/'  # TODO
 
@@ -38,7 +52,7 @@ class TestConfig:
         ninja = ninja_syntax.Writer(output)
 
         self._gen_header(ninja)
-        self._gen_rules(ninja)
+        self._gen_rules(ninja, path)
         self._gen_targets(ninja)
 
         with open(path, 'w') as f:
@@ -48,9 +62,16 @@ class TestConfig:
         ninja.comment('Auto-generated, do not edit!')
         ninja.newline()
 
-    def _gen_rules(self, ninja):
+    def _gen_rules(self, ninja, ninja_path):
         ninja.variable('ARCH_LIBDIR', self.arch_libdir)
         ninja.variable('KEY', self.key)
+        ninja.newline()
+
+        ninja.rule(
+            name='symlink',
+            command='ln -sf $in $out',
+            description='symlink: $out'
+        )
         ninja.newline()
 
         ninja.rule(
@@ -75,27 +96,54 @@ class TestConfig:
         )
         ninja.newline()
 
+        ninja.rule(
+            name='regenerate',
+            command='gramine-test regenerate',
+            description='Regenerating build file',
+            generator=True,
+        )
+
+        ninja.build(
+            outputs=[ninja_path],
+            rule='regenerate',
+            inputs=[self.config_path],
+        )
+
+        ninja.newline()
+
     def _gen_targets(self, ninja):
         ninja.build(
             outputs=['direct'],
             rule='phony',
-            inputs=[f'{name}.manifest' for name in self.manifests],
+            inputs=([name for name in self.manifests if name not in self.no_binary] +
+                    [f'{name}.manifest' for name in self.manifests]),
         )
         ninja.default('direct')
+        ninja.newline()
 
         ninja.build(
             outputs=['sgx'],
             rule='phony',
-            inputs=([f'{name}.manifest' for name in self.all_manifests] +
+            inputs=([name for name in self.all_manifests if name not in self.no_binary] +
+                    [f'{name}.manifest' for name in self.all_manifests] +
                     [f'{name}.manifest.sgx' for name in self.all_manifests] +
                     [f'{name}.sig' for name in self.all_manifests] +
                     [f'{name}.token' for name in self.all_manifests]),
         )
+        ninja.newline()
 
         for name in self.all_manifests:
             template = f'{name}.manifest.template'
             if not os.path.exists(template):
                 template = 'manifest.template'
+
+            if name not in self.no_binary and self.binary_path:
+                ninja.build(
+                    outputs=[name],
+                    rule='symlink',
+                    inputs=[os.path.join(self.binary_path, name)],
+                    variables={'ENTRYPOINT': name},
+                )
 
             ninja.build(
                 outputs=[f'{name}.manifest'],
@@ -109,7 +157,8 @@ class TestConfig:
                 implicit_outputs=[f'{name}.sig'],
                 rule='sgx-sign',
                 inputs=[f'{name}.manifest'],
-                implicit=[self.key],
+                implicit=([self.key] +
+                          [name for name in self.all_manifests if name not in self.no_binary]),
             )
 
             ninja.build(

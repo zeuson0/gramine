@@ -31,6 +31,11 @@ def pytest(ctx, pytest_args):
 
 
 @main.command()
+def regenerate():
+    test.gen_build_file(force=True)
+
+
+@main.command()
 @click.pass_context
 @click.option('--force', '-f', is_flag=True)
 @click.argument('names', metavar='NAME', type=str, nargs=-1)

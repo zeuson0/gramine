@@ -1,4 +1,6 @@
 
+binary_install_dir = 'tests/libos/regression'
+
 manifests = [
     'argv_from_file',
     'abort',
@@ -102,6 +104,19 @@ manifests = [
     'vfork_and_exec',
 ]
 
+no_binary = [
+    'argv_from_file',
+    'debug_log_file',
+    'debug_log_inline',
+    'device_passthrough',
+    'env_from_file',
+    'env_from_host',
+    'env_passthrough',
+    'file_check_policy_allow_all_but_log',
+    'file_check_policy_strict',
+    'multi_pthread_exitless',
+]
+
 [arch.x86_64]
 
 manifests = [
@@ -112,7 +127,7 @@ manifests = [
     'sighandler_divbyzero',
 ]
 
-[host.sgx]
+[sgx]
 
 manifests = [
     'attestation',
