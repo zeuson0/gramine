@@ -14,6 +14,10 @@ install_data([
     init_py,
     'gen_jinja_env.py',
     'manifest.py',
+    'regression.py',
+
+    'ninja_syntax.py',
+    'test.py'
 ], install_dir: python3_pkgdir)
 
 if sgx

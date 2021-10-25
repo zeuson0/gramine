@@ -1,0 +1,52 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: LGPL-3.0-or-later
+# Copyright (c) 2021 Intel Corporation
+#                    Paweł Marczewski <pawel@invisiblethingslab.com>
+
+import click
+import sys
+import os
+
+from graminelibos import _CONFIG_SGX_ENABLED
+from graminelibos import test
+
+@click.group()
+@click.option('--sgx', is_flag=True, help='Enable SGX mode')
+@click.pass_context
+def main(ctx, sgx):
+    if os.environ.get('SGX') == '1':
+        sgx = True
+    if sgx and not _CONFIG_SGX_ENABLED:
+        raise click.Exception('This version of Gramine is built without SGX')
+    ctx.obj = {'sgx': sgx}
+
+
+@main.command(context_settings={'ignore_unknown_options': True})
+@click.argument('pytest_args', metavar='ARGS', nargs=-1, type=click.UNPROCESSED)
+@click.pass_context
+def pytest(ctx, pytest_args):
+    sgx = ctx.obj['sgx']
+    test.exec_pytest(sgx, pytest_args)
+    os.execve(sys.executable, argv, env)
+
+
+@main.command()
+@click.pass_context
+@click.option('--force', '-f', is_flag=True)
+@click.argument('names', metavar='NAME', type=str, nargs=-1)
+def build(ctx, force, names):
+    sgx = ctx.obj['sgx']
+    host = 'sgx' if sgx else 'direct'
+
+    test.gen_build_file(force=force)
+    if names:
+        targets = [f'{host}-{name}' for name in names]
+    else:
+        targets = [host]
+    if force:
+        test.run_ninja_or_exit(['-t', 'clean'] + targets)
+    test.exec_ninja(targets)
+
+
+if __name__ == '__main__':
+    main() # pylint: disable=no-value-for-parameter

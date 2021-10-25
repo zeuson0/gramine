@@ -12,6 +12,7 @@ if sgx
     install_data([
         'gramine-sgx-get-token',
         'gramine-sgx-sign',
+        'gramine-test',
     ], install_dir: get_option('bindir'))
 
     meson.add_install_script('/bin/sh', '-c',
