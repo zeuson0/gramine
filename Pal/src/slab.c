@@ -18,15 +18,6 @@ static spinlock_t g_slab_mgr_lock = INIT_SPINLOCK_UNLOCKED;
 #define SYSTEM_UNLOCK() spinlock_unlock(&g_slab_mgr_lock)
 #define SYSTEM_LOCKED() spinlock_is_locked(&g_slab_mgr_lock)
 
-#define POOL_SIZE 64 * 1024 * 1024
-static char g_mem_pool[POOL_SIZE];
-static bool g_alloc_from_low = true; /* allocate from low addresses if true, from high if false */
-static void* g_mem_pool_end = &g_mem_pool[POOL_SIZE];
-static void* g_low  = g_mem_pool;
-static void* g_high = &g_mem_pool[POOL_SIZE];
-
-#define STARTUP_SIZE 2
-
 static inline void* __malloc(size_t size);
 static inline void __free(void* addr, size_t size);
 #define system_malloc(size) __malloc(size)
@@ -34,35 +25,11 @@ static inline void __free(void* addr, size_t size);
 
 #include "slabmgr.h"
 
-/* caller (slabmgr.h) releases g_slab_mgr_lock before calling this function (this must be reworked
- * in the future), so grab the lock again to protect g_low/g_high */
 static inline void* __malloc(size_t size) {
     void* addr = NULL;
 
     size = ALIGN_UP(size, MIN_MALLOC_ALIGNMENT);
 
-    SYSTEM_LOCK();
-    if (g_low + size <= g_high) {
-        /* alternate allocating objects from low and high addresses of available memory pool; this
-         * allows to free memory for patterns like "malloc1 - malloc2 - free1" (seen in e.g.
-         * realloc) */
-        if (g_alloc_from_low) {
-            addr = g_low;
-            g_low += size;
-        } else {
-            addr = g_high - size;
-            g_high -= size;
-        }
-        g_alloc_from_low = !g_alloc_from_low; /* switch alloc direction for next malloc */
-    }
-    SYSTEM_UNLOCK();
-    if (addr)
-        return addr;
-
-    /* At this point, we depleted the pre-allocated memory pool of POOL_SIZE. Let's fall back to
-     * PAL-internal allocations. PAL allocator must be careful though because LibOS doesn't know
-     * about PAL-internal memory, limited via manifest option `loader.pal_internal_mem_size` and
-     * thus this malloc may return -ENOMEM. */
     int ret = _DkVirtualMemoryAlloc(&addr, ALLOC_ALIGN_UP(size), PAL_ALLOC_INTERNAL,
               PAL_PROT_READ | PAL_PROT_WRITE);
     if (ret < 0) {
@@ -76,32 +43,11 @@ static inline void* __malloc(size_t size) {
     return addr;
 }
 
-/* caller (slabmgr.h) releases g_slab_mgr_lock before calling this function (this must be reworked
- * in the future), so grab the lock again to protect g_low/g_high */
 static inline void __free(void* addr, size_t size) {
     if (!addr)
         return;
 
     size = ALIGN_UP(size, MIN_MALLOC_ALIGNMENT);
-
-    if (addr >= (void*)g_mem_pool && addr < g_mem_pool_end) {
-        SYSTEM_LOCK();
-        if (addr == g_high) {
-            /* reclaim space of last object allocated at high addresses */
-            g_high = addr + size;
-        } else if (addr + size == g_low) {
-            /* reclaim space of last object allocated at low addresses */
-            g_low = addr;
-        }
-        /* not a last object from low/high addresses, can't do anything about this case */
-#ifdef ASAN
-        /* Keep the now-unused part of `g_mem_pool` poisoned, because we know it won't be used by
-         * anything other than our allocator */
-        asan_poison_region((uintptr_t)addr, size, ASAN_POISON_HEAP_LEFT_REDZONE);
-#endif
-        SYSTEM_UNLOCK();
-        return;
-    }
 
 #ifdef ASAN
     /* Unpoison the memory before unmapping it */
@@ -119,10 +65,6 @@ void init_slab_mgr(void) {
     g_slab_mgr = create_slab_mgr();
     if (!g_slab_mgr)
         INIT_FAIL(PAL_ERROR_NOMEM, "cannot initialize slab manager");
-#ifdef ASAN
-    /* Poison all of `g_mem_pool` initially */
-    asan_poison_region((uintptr_t)&g_mem_pool, sizeof(g_mem_pool), ASAN_POISON_HEAP_LEFT_REDZONE);
-#endif
 }
 
 void* malloc(size_t size) {

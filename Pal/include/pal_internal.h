@@ -278,4 +278,8 @@ const char* pal_event_name(enum PAL_EVENT event);
     } while (0)
 #include "uthash.h"
 
+/* Size of PAL memory available before parsing the manifest; `loader.pal_internal_mem_size` does not
+ * include this memory */
+#define PAL_INITIAL_MEM_SIZE (64 * 1024 * 1024)
+
 #endif

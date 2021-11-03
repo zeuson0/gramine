@@ -33,12 +33,42 @@
 static size_t g_pal_internal_mem_used = 0;
 static spinlock_t g_pal_internal_mem_lock = INIT_SPINLOCK_UNLOCKED;
 
+/* Initial memory available before allocating the PAL-internal range. This is necessary because the
+ * size of PAL-internal range is described in the manifest, and we need the memory in order to parse
+ * the manifest. */
+static char g_mem_pool[PAL_INITIAL_MEM_SIZE] __attribute__((aligned(PRESET_PAGESIZE)));
+static size_t g_mem_pool_used = 0;
+
 bool _DkCheckMemoryMappable(const void* addr, size_t size) {
     if (addr < DATA_END && addr + size > TEXT_START) {
         log_error("Address %p-%p is not mappable", addr, addr + size);
         return true;
     }
     return false;
+}
+
+static void* alloc_internal(size_t size) {
+    assert(IS_ALIGNED(size, g_page_size));
+    assert(spinlock_is_locked(&g_pal_internal_mem_lock));
+
+    void* addr;
+
+    /* Try the initial pool first */
+    if (g_mem_pool_used + size <= PAL_INITIAL_MEM_SIZE) {
+        addr = g_mem_pool + g_mem_pool_used;
+        g_mem_pool_used += size;
+        return addr;
+    }
+
+    /* The initial pool is exhausted, try the PAL-internal range */
+    if (g_pal_internal_mem_addr && g_pal_internal_mem_used + size <= g_pal_internal_mem_size) {
+        addr = g_pal_internal_mem_addr + g_pal_internal_mem_used;
+        g_pal_internal_mem_used += size;
+        return addr;
+    }
+
+    /* No memory available for internal allocation, fail */
+    return NULL;
 }
 
 int _DkVirtualMemoryAlloc(void** paddr, size_t size, int alloc_type, int prot) {
@@ -50,18 +80,14 @@ int _DkVirtualMemoryAlloc(void** paddr, size_t size, int alloc_type, int prot) {
     if (alloc_type & PAL_ALLOC_INTERNAL) {
         size = ALIGN_UP(size, g_page_size);
         spinlock_lock(&g_pal_internal_mem_lock);
-        if (size > g_pal_internal_mem_size - g_pal_internal_mem_used) {
-            /* requested PAL-internal allocation would exceed the limit, fail */
-            spinlock_unlock(&g_pal_internal_mem_lock);
-            return -PAL_ERROR_NOMEM;
-        }
-        addr = g_pal_internal_mem_addr + g_pal_internal_mem_used;
-        g_pal_internal_mem_used += size;
-        assert(IS_ALIGNED(g_pal_internal_mem_used, g_page_size));
+        addr = alloc_internal(size);
         spinlock_unlock(&g_pal_internal_mem_lock);
+        if (!addr)
+            return -PAL_ERROR_NOMEM;
     }
 
     assert(addr);
+    assert(IS_ALIGNED((uintptr_t)addr, g_page_size));
 
     int flags = PAL_MEM_FLAGS_TO_LINUX(alloc_type, prot | PAL_PROT_WRITECOPY);
     prot = PAL_PROT_TO_LINUX(prot);

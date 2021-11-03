@@ -41,9 +41,7 @@ static struct link_map g_pal_map;
 
 PAL_SESSION_KEY g_master_key = {0};
 
-/* for internal PAL objects, Gramine first uses pre-allocated g_mem_pool and then falls back to
- * _DkVirtualMemoryAlloc(PAL_ALLOC_INTERNAL); the amount of available PAL internal memory is
- * limited by the variable below */
+/* Limit of PAL memory available for _DkVirtualMemoryAlloc(PAL_ALLOC_INTERNAL) */
 size_t g_pal_internal_mem_size = 0;
 
 const size_t g_page_size = PRESET_PAGESIZE;
@@ -722,9 +720,10 @@ noreturn void pal_linux_main(char* uptr_libpal_uri, size_t libpal_uri_len, char*
     g_pal_sec.gid = sec_info.gid;
 
     /* set up page allocator and slab manager */
+    g_pal_internal_mem_size = PAL_INITIAL_MEM_SIZE;
+    init_enclave_pages();
     init_slab_mgr();
     init_untrusted_slab_mgr();
-    init_enclave_pages();
 
     /* initialize enclave properties */
     ret = init_enclave();
@@ -845,20 +844,23 @@ noreturn void pal_linux_main(char* uptr_libpal_uri, size_t libpal_uri_len, char*
             READ_ONCE(*(size_t*)i);
     }
 
-    size_t pal_internal_mem_size;
+    /* For backward compatibility, `loader.pal_internal_mem_size` does not include
+     * PAL_INITIAL_MEM_SIZE */
+    size_t extra_mem_size;
     ret = toml_sizestring_in(g_pal_state.manifest_root, "loader.pal_internal_mem_size",
-                             /*defaultval=*/0, &pal_internal_mem_size);
+                             /*defaultval=*/0, &extra_mem_size);
     if (ret < 0) {
         log_error("Cannot parse 'loader.pal_internal_mem_size'");
         ocall_exit(1, /*is_exitgroup=*/true);
     }
 
-    if (pal_internal_mem_size < g_pal_internal_mem_size) {
+    if (extra_mem_size + PAL_INITIAL_MEM_SIZE < g_pal_internal_mem_size) {
         log_error("Too small `loader.pal_internal_mem_size`, need at least %luMB because the "
-                  "manifest is large", g_pal_internal_mem_size / 1024 / 1024);
+                  "manifest is large",
+                  (g_pal_internal_mem_size - PAL_INITIAL_MEM_SIZE) / 1024 / 1024);
         ocall_exit(1, /*is_exitgroup=*/true);
     }
-    g_pal_internal_mem_size = pal_internal_mem_size;
+    g_pal_internal_mem_size = extra_mem_size + PAL_INITIAL_MEM_SIZE;
 
     if ((ret = init_file_check_policy()) < 0) {
         log_error("Failed to load the file check policy: %d", ret);
