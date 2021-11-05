@@ -587,12 +587,13 @@ int setup_pal_binary(struct link_map* pal_map) {
     pal_map->l_base = pal_binary_addr;
     pal_map->l_ld = dynamic_section;
 
-    ret = perform_relocations(pal_map);
+    ret = find_string_and_symbol_tables(pal_map->l_addr, pal_map->l_base, &pal_map->string_table,
+                                        &pal_map->symbol_table, &pal_map->symbol_table_cnt);
     if (ret < 0)
         return ret;
 
-    ret = find_string_and_symbol_tables(pal_map->l_addr, pal_map->l_base, &pal_map->string_table,
-                                        &pal_map->symbol_table, &pal_map->symbol_table_cnt);
+    ret = perform_relocations(pal_map);
+
     return ret;
 }
 
