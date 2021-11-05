@@ -167,6 +167,10 @@ void put_signal_dispositions(struct shim_signal_dispositions* dispositions);
 void get_thread(struct shim_thread* thread);
 void put_thread(struct shim_thread* thread);
 
+#ifdef ASAN
+void asan_unpoison_thread_stack(struct shim_thread* thread);
+#endif
+
 void log_setprefix(shim_tcb_t* tcb);
 
 static inline struct shim_thread* get_cur_thread(void) {

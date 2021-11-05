@@ -9,6 +9,7 @@
  */
 
 #include "api.h"
+#include "asan.h"
 #include "assert.h"
 #include "cpu.h"
 #include "list.h"
@@ -337,8 +338,11 @@ void put_thread(struct shim_thread* thread) {
         assert(LIST_EMPTY(thread, list));
 
         if (thread->libos_stack_bottom) {
-            void* tmp_vma = NULL;
+#ifdef ASAN
+            asan_unpoison_thread_stack(thread);
+#endif
             char* addr = (char*)thread->libos_stack_bottom - SHIM_THREAD_LIBOS_STACK_SIZE;
+            void* tmp_vma = NULL;
             if (bkeep_munmap(addr, SHIM_THREAD_LIBOS_STACK_SIZE, /*is_internal=*/true, &tmp_vma) < 0) {
                 log_error("[put_thread] Failed to remove bookkeeped memory at %p-%p!",
                           addr, (char*)addr + SHIM_THREAD_LIBOS_STACK_SIZE);
@@ -387,6 +391,14 @@ void put_thread(struct shim_thread* thread) {
         free(thread);
     }
 }
+
+#ifdef ASAN
+__attribute_no_sanitize_address
+void asan_unpoison_thread_stack(struct shim_thread* thread) {
+    uintptr_t addr = (uintptr_t)thread->libos_stack_bottom - SHIM_THREAD_LIBOS_STACK_SIZE;
+    asan_unpoison_region(addr, SHIM_THREAD_LIBOS_STACK_SIZE);
+}
+#endif
 
 void add_thread(struct shim_thread* thread) {
     assert(!is_internal(thread) && LIST_EMPTY(thread, list));

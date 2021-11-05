@@ -88,6 +88,23 @@ static void asan_find_problem(uintptr_t addr, size_t size, uintptr_t* out_bad_ad
         case ASAN_POISON_HEAP_AFTER_FREE:
             bug_type = "heap-use-after-free";
             break;
+        case ASAN_POISON_STACK_LEFT:
+            bug_type = "stack-buffer-underflow";
+            break;
+        case ASAN_POISON_STACK_MID:
+        case ASAN_POISON_STACK_RIGHT:
+            bug_type = "stack-buffer-overflow";
+            break;
+        case ASAN_POISON_STACK_AFTER_RETURN:
+            bug_type = "stack-use-after-return";
+            break;
+        case ASAN_POISON_STACK_USE_AFTER_SCOPE:
+            bug_type = "stack-use-after-scope";
+            break;
+        case ASAN_POISON_ALLOCA_LEFT:
+        case ASAN_POISON_ALLOCA_RIGHT:
+            bug_type = "dynamic-stack-buffer-overflow";
+            break;
         default:
             bug_type = "unknown-crash";
             break;
@@ -114,7 +131,7 @@ static void asan_dump(uintptr_t bad_addr) {
             uint8_t val = *(uint8_t*)shadow;
             if (shadow == bad_shadow) {
                 buf_printf(&buf, "[%02x]", val);
-            } else if (shadow == bad_shadow + 1) {
+            } else if (shadow == bad_shadow + 1 && shadow > line) {
                 buf_printf(&buf, "%02x", val);
             } else {
                 buf_printf(&buf, " %02x", val);
@@ -262,6 +279,7 @@ __attribute__((noinline))
 void __asan_handle_no_return(void) {}
 
 __attribute__((noinline))
+__attribute_no_sanitize_address
 void __asan_alloca_poison(uintptr_t addr, size_t size) {
     assert(IS_ALIGNED(addr, ASAN_ALLOCA_REDZONE_SIZE));
 
@@ -275,6 +293,7 @@ void __asan_alloca_poison(uintptr_t addr, size_t size) {
 }
 
 __attribute__((noinline))
+__attribute_no_sanitize_address
 void __asan_allocas_unpoison(uintptr_t top, uintptr_t bottom) {
     if (top) {
         assert(top <= bottom);

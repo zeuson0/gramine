@@ -674,6 +674,10 @@ void* rbp_before_call = NULL;
 #endif
 #endif /* !CALL_ENTRY */
 
+/* TODO: this function assumes that the `cookies` array is right at the bottom of the current stack,
+ * and the executed objects (CALL_ENTRY) can continue execution below that. This is not true at
+ * least in case of ASan stack sanitization. */
+__attribute_no_sanitize_address
 noreturn void start_execution(const char** arguments, const char** environs) {
     int narguments = 0;
     for (const char** a = arguments; *a; a++, narguments++)

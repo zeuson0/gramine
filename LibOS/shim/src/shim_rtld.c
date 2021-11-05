@@ -819,6 +819,16 @@ int register_library(const char* name, unsigned long load_address) {
     return 0;
 }
 
+__attribute_no_sanitize_address
+noreturn static void cleanup_and_call_elf_entry(ElfW(Addr) entry, void* argp) {
+#ifdef ASAN
+    struct shim_thread* thread = get_cur_thread();
+    asan_unpoison_thread_stack(thread);
+#endif
+    CALL_ELF_ENTRY(entry, argp);
+    die_or_inf_loop();
+}
+
 noreturn void execute_elf_object(struct link_map* exec_map, void* argp, ElfW(auxv_t)* auxp) {
     if (exec_map) {
         /* If a new map is provided, it means we have cleared the existing one by calling
@@ -891,9 +901,7 @@ noreturn void execute_elf_object(struct link_map* exec_map, void* argp, ElfW(aux
 
     ElfW(Addr) entry = g_interp_map ? g_interp_map->l_entry : g_exec_map->l_entry;
 
-    CALL_ELF_ENTRY(entry, argp);
-
-    die_or_inf_loop();
+    cleanup_and_call_elf_entry(entry, argp);
 }
 
 BEGIN_CP_FUNC(elf_object) {
