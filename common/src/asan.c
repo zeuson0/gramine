@@ -129,6 +129,12 @@ static void asan_dump(uintptr_t bad_addr) {
     log_error("asan: %22s %02x..%02x", "partially addressable:", 1, ASAN_SHADOW_ALIGN - 1);
     log_error("asan: %22s %02x", "heap left redzone:", ASAN_POISON_HEAP_LEFT_REDZONE);
     log_error("asan: %22s %02x", "freed heap region:", ASAN_POISON_HEAP_AFTER_FREE);
+    log_error("asan: %22s %02x", "stack left redzone:", ASAN_POISON_STACK_LEFT);
+    log_error("asan: %22s %02x", "stack mid redzone:", ASAN_POISON_STACK_MID);
+    log_error("asan: %22s %02x", "stack right redzone:", ASAN_POISON_STACK_RIGHT);
+    log_error("asan: %22s %02x", "stack after return:", ASAN_POISON_STACK_AFTER_RETURN);
+    log_error("asan: %22s %02x", "alloca left redzone:", ASAN_POISON_ALLOCA_LEFT);
+    log_error("asan: %22s %02x", "alloca right redzone:", ASAN_POISON_ALLOCA_RIGHT);
 }
 
 /* Display full report for the user */
@@ -247,13 +253,34 @@ void __asan_report_store_n(uintptr_t addr, size_t size) {
 }
 
 __attribute__((noinline))
-void __asan_handle_no_return(void) {}
-
-__attribute__((noinline))
 void __asan_init(void) {}
 
 __attribute__((noinline))
 void __asan_version_mismatch_check_v8(void) {}
+
+__attribute__((noinline))
+void __asan_handle_no_return(void) {}
+
+__attribute__((noinline))
+void __asan_alloca_poison(uintptr_t addr, size_t size) {
+    assert(IS_ALIGNED(addr, ASAN_ALLOCA_REDZONE_SIZE));
+
+    uintptr_t left_redzone_addr = addr - ASAN_ALLOCA_REDZONE_SIZE;
+    uintptr_t end_addr = addr + size;
+    uintptr_t right_redzone_addr = ALIGN_UP(end_addr, ASAN_ALLOCA_REDZONE_SIZE) +
+        ASAN_ALLOCA_REDZONE_SIZE;
+    asan_poison_region(left_redzone_addr, ASAN_ALLOCA_REDZONE_SIZE, ASAN_POISON_ALLOCA_LEFT);
+    asan_poison_region(addr, right_redzone_addr - addr, ASAN_POISON_ALLOCA_RIGHT);
+    asan_unpoison_region(addr, size);
+}
+
+__attribute__((noinline))
+void __asan_allocas_unpoison(uintptr_t top, uintptr_t bottom) {
+    if (top) {
+        assert(top <= bottom);
+        asan_unpoison_region(top, bottom - top);
+    }
+}
 
 #define DEFINE_ASAN_SET_SHADOW(name, value)                         \
     __attribute__((noinline))                                       \

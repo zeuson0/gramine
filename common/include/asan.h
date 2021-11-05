@@ -116,6 +116,13 @@
 /* Magic values to mark different kinds of inaccessible memory. */
 #define ASAN_POISON_HEAP_LEFT_REDZONE     0xfa
 #define ASAN_POISON_HEAP_AFTER_FREE       0xfd
+#define ASAN_POISON_STACK_LEFT            0xf1
+#define ASAN_POISON_STACK_MID             0xf2
+#define ASAN_POISON_STACK_RIGHT           0xf3
+#define ASAN_POISON_STACK_AFTER_RETURN    0xf5
+#define ASAN_POISON_STACK_USE_AFTER_SCOPE 0xf8
+#define ASAN_POISON_ALLOCA_LEFT           0xca
+#define ASAN_POISON_ALLOCA_RIGHT          0xcb
 
 /* Poison a memory region. `addr` must be aligned to ASAN_SHADOW_ALIGN, and `size` is rounded up to
  * ASAN_SHADOW_ALIGN. */
@@ -163,6 +170,24 @@ void __asan_report_store_n(uintptr_t p, size_t size);
 
 /* Called when entering a function marked as no-return. Used for stack sanitization. */
 void __asan_handle_no_return(void);
+
+/* Size of `alloca` redzone (hardcoded in LLVM: `kAllocaRzSize`); see below for details. */
+#define ASAN_ALLOCA_REDZONE_SIZE 32
+
+/*
+ * Poison an area around a buffer allocated with `alloca`, using ASAN_POISON_ALLOCA_{LEFT,RIGHT}:
+ *
+ * - left redzone: ASAN_ALLOCA_REDZONE_SIZE bytes before `addr`
+ * - partial right redzone: from `addr + size` to `ALIGN_UP(addr + size, ASAN_ALLOCA_REDZONE_SIZE)`
+ * - right redzone: ASAN_ALLOCA_REDZONE_SIZE bytest after partial right redzone
+ *
+ * `addr` will be aligned to ASAN_ALLOCA_REDZONE_SIZE.
+ */
+void __asan_alloca_poison(uintptr_t addr, size_t size);
+
+/* Unpoison the stack area from `top` until `bottom`. Should be a no-op if `top` is zero or greater
+ * than `bottom`. */
+void __asan_allocas_unpoison(uintptr_t top, uintptr_t bottom);
 
 /* Callbacks for setting the shadow memory to specific values. As with load/store callbacks, LLVM
  * normally generates inline stores and calls these functions only for bigger areas. This is
