@@ -105,6 +105,9 @@ static void asan_find_problem(uintptr_t addr, size_t size, uintptr_t* out_bad_ad
         case ASAN_POISON_ALLOCA_RIGHT:
             bug_type = "dynamic-stack-buffer-overflow";
             break;
+        case ASAN_POISON_USER:
+            bug_type = "use-after-poison";
+            break;
         default:
             bug_type = "unknown-crash";
             break;
@@ -152,6 +155,7 @@ static void asan_dump(uintptr_t bad_addr) {
     log_error("asan: %22s %02x", "stack after return:", ASAN_POISON_STACK_AFTER_RETURN);
     log_error("asan: %22s %02x", "alloca left redzone:", ASAN_POISON_ALLOCA_LEFT);
     log_error("asan: %22s %02x", "alloca right redzone:", ASAN_POISON_ALLOCA_RIGHT);
+    log_error("asan: %22s %02x", "user-poisoned:", ASAN_POISON_USER);
 }
 
 /* Display full report for the user */

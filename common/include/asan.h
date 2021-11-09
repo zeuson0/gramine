@@ -123,6 +123,7 @@
 #define ASAN_POISON_STACK_USE_AFTER_SCOPE 0xf8
 #define ASAN_POISON_ALLOCA_LEFT           0xca
 #define ASAN_POISON_ALLOCA_RIGHT          0xcb
+#define ASAN_POISON_USER                  0xf7
 
 /* Poison a memory region. `addr` must be aligned to ASAN_SHADOW_ALIGN, and `size` is rounded up to
  * ASAN_SHADOW_ALIGN. */
