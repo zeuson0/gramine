@@ -7,6 +7,7 @@
 
 #include "gramine_entry_api.h"
 
+__attribute_no_sanitize_address
 static inline long vdso_arch_syscall(long nr, long arg1, long arg2) {
     long ret;
     __asm__ volatile(

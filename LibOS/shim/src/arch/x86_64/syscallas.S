@@ -209,9 +209,9 @@ Lmorestack_for_gdb_bt:
 .size __morestack, .-__morestack
 #endif
 
-.global return_from_syscall
-.type return_from_syscall, @function
-return_from_syscall:
+.global restore_context
+.type restore_context, @function
+restore_context:
     # expects one argument (in `rdi`) - pointer to PAL_CONTEXT
     .cfi_startproc
 
@@ -271,4 +271,4 @@ return_from_syscall:
     jmp .Lrestore_context
 
     .cfi_endproc
-.size return_from_syscall, .-return_from_syscall
+.size restore_context, .-restore_context
