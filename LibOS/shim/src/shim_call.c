@@ -49,6 +49,15 @@ static int run_test_asan_stack(void) {
 
     return 0;
 }
+
+__attribute__((no_sanitize("undefined")))
+static int run_test_asan_global(void) {
+    const char* s = "hello world";
+    const char* p = s + strlen(s) + 1;
+    log_always("p = %p", p);
+    return (int)*p;
+}
+
 #endif /* ASAN */
 
 static const struct shim_test {
@@ -62,6 +71,7 @@ static const struct shim_test {
 #ifdef ASAN
     { "asan_heap", &run_test_asan_heap },
     { "asan_stack", &run_test_asan_stack },
+    { "asan_global", &run_test_asan_global },
 #endif
     { NULL, NULL },
 };

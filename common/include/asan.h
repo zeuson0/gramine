@@ -149,6 +149,7 @@
 #define ASAN_POISON_STACK_AFTER_SCOPE     0xf8
 #define ASAN_POISON_ALLOCA_LEFT           0xca
 #define ASAN_POISON_ALLOCA_RIGHT          0xcb
+#define ASAN_POISON_GLOBAL                0xf9
 #define ASAN_POISON_USER                  0xf7  /* currently used for unallocated SGX memory */
 
 /* Size of `alloca` redzone (hardcoded in LLVM: `kAllocaRzSize`); see `asan_alloca_poison` below. */
@@ -226,6 +227,29 @@ void __asan_alloca_poison(uintptr_t addr, size_t size);
 
 /* Unpoison the stack area from `top` to `bottom`. Do nothing if `top` is zero. */
 void __asan_allocas_unpoison(uintptr_t top, uintptr_t bottom);
+
+struct __asan_global {
+    /* The address of the global. */
+    uintptr_t beg;
+    /* The original size of the global. */
+    size_t size;
+    /* The size with the redzone. */
+    size_t size_with_redzone;
+    /* Name as a C string. */
+    const char *name;
+    /* Module name as a C string. This pointer is a unique identifier of a module. */
+    const char *module_name;
+    /* Non-zero if the global has dynamic initializer. */
+    size_t has_dynamic_init;
+    /* Source location of a global, or NULL if it is unknown. (__asan_global_source_location type
+     * omitted) */
+    void *location;
+    /* The address of the ODR (One Definition Rule) indicator symbol. */
+    uintptr_t odr_indicator;
+};
+
+void __asan_register_globals(struct __asan_global* globals, size_t n);
+void __asan_unregister_globals(struct __asan_global* globals, size_t n);
 
 /* Callbacks for setting the shadow memory to specific values. As with load/store callbacks, LLVM
  * normally generates inline stores and calls these functions only for bigger areas. This is
