@@ -1096,6 +1096,15 @@ static void setup_asan(void) {
         DO_SYSCALL(exit_group, unix_to_pal_error(err));
         die_or_inf_loop();
     }
+
+    addr = (void*)DO_SYSCALL(mmap, (void*)ASAN_HEAP_START, ASAN_HEAP_SIZE, prot, flags,
+                                   /*fd=*/-1, /*offset=*/0);
+    if (IS_PTR_ERR(addr)) {
+        int err = PTR_TO_ERR(addr);
+        log_error("asan: error setting up heap: %d", err);
+        DO_SYSCALL(exit_group, unix_to_pal_error(err));
+        die_or_inf_loop();
+    }
 }
 #endif
 

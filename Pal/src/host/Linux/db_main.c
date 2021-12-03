@@ -149,6 +149,15 @@ static void setup_asan(void) {
         DO_SYSCALL(exit_group, PAL_ERROR_NOMEM);
         die_or_inf_loop();
     }
+
+    addr = (void*)DO_SYSCALL(mmap, (void*)ASAN_HEAP_START, ASAN_HEAP_SIZE, prot, flags,
+                                   /*fd=*/-1, /*offset=*/0);
+    if (IS_PTR_ERR(addr)) {
+        /* We are super early in the init sequence, TCB is not yet set, we probably should not call
+         * any logging functions. */
+        DO_SYSCALL(exit_group, PAL_ERROR_NOMEM);
+        die_or_inf_loop();
+    }
 }
 #endif
 
@@ -256,6 +265,11 @@ noreturn void pal_linux_main(void* initial_rsp, void* fini_callback) {
 #ifdef ASAN
     ret = add_preloaded_range(ASAN_SHADOW_START, ASAN_SHADOW_START + ASAN_SHADOW_LENGTH,
                               "asan_shadow");
+    if (ret < 0) {
+        INIT_FAIL(PAL_ERROR_NOMEM, "Out of memory");
+    }
+    ret = add_preloaded_range(ASAN_HEAP_START, ASAN_HEAP_START + ASAN_HEAP_SIZE,
+                              "asan_heap");
     if (ret < 0) {
         INIT_FAIL(PAL_ERROR_NOMEM, "Out of memory");
     }

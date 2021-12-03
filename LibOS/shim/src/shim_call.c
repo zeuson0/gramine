@@ -50,6 +50,18 @@ static int run_test_asan_stack(void) {
     return 0;
 }
 
+static void* alloc_on_stack(void) {
+    return __alloca(30);
+}
+
+__attribute__((no_sanitize("undefined")))
+static int run_test_asan_after_return(void) {
+    char* c = alloc_on_stack();
+    *c = 1;
+
+    return 0;
+}
+
 /* Test: write past the end of a global (static local) buffer (ASan only) */
 __attribute__((no_sanitize("undefined")))
 static int run_test_asan_global(void) {
@@ -73,6 +85,7 @@ static const struct shim_test {
 #ifdef ASAN
     { "asan_heap", &run_test_asan_heap },
     { "asan_stack", &run_test_asan_stack },
+    { "asan_after_return", &run_test_asan_after_return },
     { "asan_global", &run_test_asan_global },
 #endif
     { NULL, NULL },

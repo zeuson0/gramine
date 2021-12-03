@@ -33,7 +33,10 @@ class TC_00_Unittests(RegressionTestCase):
     def test_022_asan_stack(self):
         self._test_asan('stack', 'stack-buffer-overflow')
 
-    def test_023_asan_stack(self):
+    def test_023_asan_after_return(self):
+        self._test_asan('after_return', 'use-after-return')
+
+    def test_024_asan_global(self):
         self._test_asan('global', 'global-buffer-overflow')
 
     @unittest.skipUnless(os.environ.get('ASAN') == '1', 'test only enabled with ASAN=1')

@@ -137,6 +137,9 @@
 #define ASAN_SHADOW_ALIGN (1 << ASAN_SHADOW_SHIFT)
 #define ASAN_SHADOW_MASK ((1 << ASAN_SHADOW_SHIFT) - 1)
 
+#define ASAN_HEAP_SIZE 0x10000000000ULL
+#define ASAN_HEAP_START (ASAN_SHADOW_START - ASAN_HEAP_SIZE)
+
 /* Conversion between user and shadow addresses */
 #define ASAN_MEM_TO_SHADOW(addr) (((addr) >> ASAN_SHADOW_SHIFT) + ASAN_SHADOW_START)
 #define ASAN_SHADOW_TO_MEM(addr) (((addr) - ASAN_SHADOW_START) << ASAN_SHADOW_SHIFT)
@@ -153,6 +156,7 @@
 #define ASAN_POISON_ALLOCA_LEFT           0xca
 #define ASAN_POISON_ALLOCA_RIGHT          0xcb
 #define ASAN_POISON_GLOBAL                0xf9
+#define ASAN_POISON_AFTER_RETURN                0xf5
 #define ASAN_POISON_USER                  0xf7  /* currently used for unallocated SGX memory */
 
 /* Size of `alloca` redzone (hardcoded in LLVM: `kAllocaRzSize`); see `asan_alloca_poison` below. */
@@ -271,6 +275,26 @@ void __asan_set_shadow_f8(uintptr_t addr, size_t size);
 void* __asan_memcpy(void *dst, const void *src, size_t size);
 void* __asan_memset(void *s, int c, size_t n);
 void* __asan_memmove(void* dest, const void* src, size_t n);
+
+extern int __asan_option_detect_stack_use_after_return;
+
+
+#define DECLARE_ASAN_STACK_CALLBACKS(n) \
+    uintptr_t __asan_stack_malloc_##n(size_t size); \
+    void __asan_stack_free_##n(uintptr_t ptr, size_t size);
+
+DECLARE_ASAN_STACK_CALLBACKS(0)
+DECLARE_ASAN_STACK_CALLBACKS(1)
+DECLARE_ASAN_STACK_CALLBACKS(2)
+DECLARE_ASAN_STACK_CALLBACKS(3)
+DECLARE_ASAN_STACK_CALLBACKS(4)
+DECLARE_ASAN_STACK_CALLBACKS(5)
+DECLARE_ASAN_STACK_CALLBACKS(6)
+DECLARE_ASAN_STACK_CALLBACKS(7)
+DECLARE_ASAN_STACK_CALLBACKS(8)
+DECLARE_ASAN_STACK_CALLBACKS(9)
+DECLARE_ASAN_STACK_CALLBACKS(10)
+
 
 #endif /* ASAN */
 

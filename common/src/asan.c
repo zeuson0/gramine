@@ -144,6 +144,9 @@ static void asan_find_problem(uintptr_t addr, size_t size, uintptr_t* out_bad_ad
         case ASAN_POISON_ALLOCA_RIGHT:
             bug_type = "dynamic-stack-buffer-overflow";
             break;
+        case ASAN_POISON_AFTER_RETURN:
+            bug_type = "use-after-return";
+            break;
         case ASAN_POISON_GLOBAL:
             bug_type = "global-buffer-overflow";
             break;
@@ -409,3 +412,66 @@ int memcmp(const void* lhs, const void* rhs, size_t count) {
     ASAN_LOAD((uintptr_t)rhs, count);
     return _real_memcmp(lhs, rhs, count);
 }
+
+struct asan_frame {
+    size_t size;
+    uint8_t used;
+    uint8_t data[] __attribute__((aligned(16)));
+};
+
+#include <stdatomic.h>
+
+#define ALLOC_ALIGN 16
+#define HEAP_ALLOC_START (ASAN_HEAP_START + 16)
+
+static atomic_size_t* heap_size = (void*)ASAN_HEAP_START;
+
+int __asan_option_detect_stack_use_after_return = 1;
+
+void* DkAsanGetTcb(void);
+
+__attribute_no_sanitize_address
+static void* asan_malloc(size_t size) {
+    size = ALIGN_UP(size, ALLOC_ALIGN);
+
+    size_t heap_old_size = atomic_fetch_add(heap_size, size);
+    return (void*)(HEAP_ALLOC_START + heap_old_size);
+}
+
+__attribute_no_sanitize_address
+static uintptr_t asan_stack_malloc(size_t class_id, size_t size) {
+    size_t frame_size = 1 << (6 + class_id);
+    struct asan_frame* frame = asan_malloc(sizeof(struct asan_frame) + frame_size);
+
+    frame->size = size;
+    frame->used = 1;
+
+    uint8_t** flag_ptr_ptr = (uint8_t**)(frame->data + frame_size - sizeof(*flag_ptr_ptr));
+    *flag_ptr_ptr = &frame->used;
+    return (uintptr_t)frame->data;
+}
+
+__attribute_no_sanitize_address
+static void asan_stack_free(size_t class_id, uintptr_t ptr, size_t size) {
+    __UNUSED(class_id);
+
+    struct asan_frame* frame = container_of(ptr, struct asan_frame, data);
+    frame->used = 0;
+    asan_poison_region((uintptr_t)ptr, size, ASAN_POISON_AFTER_RETURN);
+}
+
+#define DEFINE_ASAN_STACK_CALLBACKS(n) \
+    uintptr_t __asan_stack_malloc_##n(size_t size) { return asan_stack_malloc(n, size); } \
+    void __asan_stack_free_##n(uintptr_t ptr, size_t size) { asan_stack_free(n, ptr, size); }
+
+DEFINE_ASAN_STACK_CALLBACKS(0)
+DEFINE_ASAN_STACK_CALLBACKS(1)
+DEFINE_ASAN_STACK_CALLBACKS(2)
+DEFINE_ASAN_STACK_CALLBACKS(3)
+DEFINE_ASAN_STACK_CALLBACKS(4)
+DEFINE_ASAN_STACK_CALLBACKS(5)
+DEFINE_ASAN_STACK_CALLBACKS(6)
+DEFINE_ASAN_STACK_CALLBACKS(7)
+DEFINE_ASAN_STACK_CALLBACKS(8)
+DEFINE_ASAN_STACK_CALLBACKS(9)
+DEFINE_ASAN_STACK_CALLBACKS(10)

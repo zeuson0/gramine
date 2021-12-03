@@ -208,7 +208,7 @@ if asan
         '-fsanitize=address',
         '-fno-sanitize-link-runtime',
         '-mllvm', '-asan-mapping-offset=' + asan_shadow_start,
-        '-mllvm', '-asan-use-after-return=0',
+        #'-mllvm', '-asan-use-after-return=0',
         '-DASAN',
     ]
 endif
