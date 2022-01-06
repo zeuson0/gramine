@@ -1,0 +1,25 @@
+sgx.disable_amx = true # modify this to test with AMX / without AMX
+
+loader.insecure__use_cmdline_argv = true
+
+loader.preload = "file:{{ gramine.libos }}" # for compatibility with v1.0
+
+loader.entrypoint = "file:{{ gramine.libos }}"
+libos.entrypoint = "amxtest"
+loader.log_level = "{{ log_level }}"
+loader.argv0_override = "amxtest"
+
+loader.env.LD_LIBRARY_PATH = "/lib"
+
+fs.mount.lib.type = "chroot"
+fs.mount.lib.path = "/lib"
+fs.mount.lib.uri = "file:{{ gramine.runtimedir() }}"
+
+sgx.debug = true
+sgx.nonpie_binary = true
+
+sgx.trusted_files = [
+  "file:amxtest",
+  "file:{{ gramine.libos }}",
+  "file:{{ gramine.runtimedir() }}/",
+]
