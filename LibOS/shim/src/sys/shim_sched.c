@@ -19,7 +19,9 @@
 #include "shim_thread.h"
 
 long shim_do_sched_yield(void) {
+#if 0
     DkThreadYieldExecution();
+#endif
     return 0;
 }
 
