@@ -135,6 +135,7 @@ static void emulate_rdtsc_and_print_warning(sgx_cpu_context_t* uc) {
  *               false if #UD was not handled and exception needs to be raised up to LibOS/app */
 static bool handle_ud(sgx_cpu_context_t* uc) {
     uint8_t* instr = (uint8_t*)uc->rip;
+    log_always("----- SIGILL occurred at %p: %u %u", instr, (uint32_t)instr[0], (uint32_t)instr[1]);
     if (instr[0] == 0x0f && instr[1] == 0xa2) {
         /* cpuid */
         unsigned int values[4];
