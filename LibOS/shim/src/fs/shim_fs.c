@@ -95,6 +95,7 @@ static int mount_root(void) {
     int ret;
     char* fs_root_type = NULL;
     char* fs_root_uri  = NULL;
+    char* fs_root_key  = NULL;
 
     assert(g_manifest_root);
 
@@ -112,7 +113,17 @@ static int mount_root(void) {
         goto out;
     }
 
-    struct shim_mount_params params = { .path = "/" };
+    ret = toml_string_in(g_manifest_root, "fs.root.key", &fs_root_key);
+    if (ret < 0) {
+        log_error("Cannot parse 'fs.root.key'");
+        ret = -EINVAL;
+        goto out;
+    }
+
+    struct shim_mount_params params = {
+        .path = "/",
+        .key = fs_root_key,
+    };
 
     if (!fs_root_type && !fs_root_uri) {
         params.type = "chroot";
@@ -185,6 +196,7 @@ static int mount_one_nonroot(toml_table_t* mount, const char* prefix) {
     char* mount_type = NULL;
     char* mount_path = NULL;
     char* mount_uri  = NULL;
+    char* mount_key  = NULL;
 
     ret = toml_string_in(mount, "type", &mount_type);
     if (ret < 0) {
@@ -203,6 +215,13 @@ static int mount_one_nonroot(toml_table_t* mount, const char* prefix) {
     ret = toml_string_in(mount, "uri", &mount_uri);
     if (ret < 0) {
         log_error("Cannot parse '%s.uri'", prefix);
+        ret = -EINVAL;
+        goto out;
+    }
+
+    ret = toml_string_in(mount, "key", &mount_key);
+    if (ret < 0) {
+        log_error("Cannot parse '%s.key'", prefix);
         ret = -EINVAL;
         goto out;
     }
@@ -256,6 +275,7 @@ static int mount_one_nonroot(toml_table_t* mount, const char* prefix) {
         .type = mount_type ?: "chroot",
         .path = mount_path,
         .uri = mount_uri,
+        .key = mount_key,
     };
     ret = mount_fs(&params);
 
@@ -263,6 +283,7 @@ out:
     free(mount_type);
     free(mount_path);
     free(mount_uri);
+    free(mount_key);
     return ret;
 }
 
