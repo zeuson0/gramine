@@ -15,7 +15,7 @@
 
 #include "rw_file.h"
 
-#define KEY_PATH "/dev/attestation/keys/custom"
+#define KEY_PATH "/dev/attestation/keys/my_custom_key"
 
 #define INVALID_KEY "foo"
 #define OLD_KEY "00112233445566778899aabbccddeeff"
