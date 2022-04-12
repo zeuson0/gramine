@@ -8,29 +8,50 @@
  * sub-directories.
  */
 
+#include <stdbool.h>
+
 #include "api.h"
 #include "shim_fs.h"
 #include "shim_fs_pseudo.h"
 
+struct callback_arg {
+    size_t cache_id_to_match; // index in global caches list (topo_info->caches[])
+    size_t cache_type; // cache type/level (index in caches_ids[])
+};
+
+static bool is_same_cache(size_t pos, const void* _callback_arg) {
+    const struct callback_arg* callback_arg = _callback_arg;
+    const struct pal_cpu_thread_info* ti = &g_pal_public_state->topo_info.threads[pos];
+    return ti->is_online
+           && ti->caches_ids[callback_arg->cache_type] == callback_arg->cache_id_to_match;
+}
+
 int sys_cache_load(struct shim_dentry* dent, char** out_data, size_t* out_size) {
     int ret;
 
-    unsigned int cache_num;
-    ret = sys_resource_find(dent, "cache", &cache_num);
+    unsigned int cache_type;
+    ret = sys_resource_find(dent, "cache", &cache_type);
     if (ret < 0)
         return ret;
 
-    unsigned int cpu_num;
-    ret = sys_resource_find(dent, "cpu", &cpu_num);
+    unsigned int thread_id;
+    ret = sys_resource_find(dent, "cpu", &thread_id);
     if (ret < 0)
         return ret;
 
     const char* name = dent->name;
-    struct pal_core_cache_info* cache_info =
-        &g_pal_public_state->topo_info.core_topo_arr[cpu_num].cache_info_arr[cache_num];
+
+    const struct pal_topo_info* topo_info = &g_pal_public_state->topo_info;
+    size_t cache_idx = topo_info->threads[thread_id].caches_ids[cache_type];
+    const struct pal_cache_info* cache_info = &topo_info->caches[cache_idx];
     char str[PAL_SYSFS_MAP_FILESZ] = {'\0'};
     if (strcmp(name, "shared_cpu_map") == 0) {
-        ret = sys_convert_ranges_to_cpu_bitmap_str(&cache_info->shared_cpu_map, str, sizeof(str));
+        struct callback_arg callback_arg = {
+            .cache_id_to_match = cache_idx,
+            .cache_type = cache_type,
+        };
+        ret = sys_print_as_bitmask(str, sizeof(str), topo_info->threads_cnt,
+                                   is_same_cache, &callback_arg);
     } else if (strcmp(name, "level") == 0) {
         ret = snprintf(str, sizeof(str), "%zu\n", cache_info->level);
     } else if (strcmp(name, "type") == 0) {
@@ -45,6 +66,7 @@ int sys_cache_load(struct shim_dentry* dent, char** out_data, size_t* out_size) 
                 ret = snprintf(str, sizeof(str), "Unified\n");
                 break;
             default:
+                assert(!"Should be unreachable");
                 ret = -ENOENT;
         }
     } else if (strcmp(name, "size") == 0) {
