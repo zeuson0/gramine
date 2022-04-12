@@ -3,6 +3,7 @@
  *                    Paweł Marczewski <pawel@invisiblethingslab.com>
  */
 
+#include "cpu.h"
 #include "shim_fs.h"
 #include "shim_lock.h"
 #include "stat.h"
@@ -60,6 +61,7 @@ static int generic_istat(struct shim_inode* inode, struct stat* buf) {
     lock(&inode->lock);
     buf->st_mode = inode->type | inode->perm;
     buf->st_size = inode->size;
+    buf->st_blksize = PAGE_SIZE;
     /*
      * Pretend `nlink` is 2 for directories (to account for "." and ".."), 1 for other files.
      *

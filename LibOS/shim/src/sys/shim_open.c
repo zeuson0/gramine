@@ -556,3 +556,72 @@ out:
     put_handle(hdl);
     return ret;
 }
+
+long shim_do_fallocate(int fd, int mode, loff_t offset, loff_t len) {
+    int ret;
+    if (offset < 0) {
+        return -EINVAL;
+    }
+    if (len <= 0) {
+        return -EINVAL;
+    }
+    if (mode) {
+        log_warning("fallocate only supported with 0 as mode");
+        return -ENOSYS;
+    }
+
+    struct shim_handle* handle = get_fd_handle(fd, NULL, NULL);
+    if (!handle) {
+        return -EBADF;
+    }
+    switch (handle->type) {
+        case TYPE_CHROOT:
+        case TYPE_CHROOT_ENCRYPTED:
+            break;
+        case TYPE_PIPE:
+            ret = -ESPIPE;
+            goto out;
+        default:
+            ret = -ENODEV;
+            goto out;
+    }
+
+    if (!(handle->acc_mode & MAY_WRITE)) {
+        ret = -EBADF;
+        goto out;
+    }
+    if (handle->is_dir) {
+        ret = -EBADF;
+        goto out;
+    }
+
+    struct shim_fs* fs = handle->fs;
+    if (!fs || !fs->fs_ops) {
+        ret = -EINVAL;
+        goto out;
+    }
+    if (!fs->fs_ops->truncate) {
+        ret = -EOPNOTSUPP;
+        goto out;
+    }
+
+    loff_t end;
+    if (__builtin_add_overflow(offset, len, &end)) {
+        ret = -EFBIG;
+        goto out;
+    }
+
+    /* Simple implemenation: extend the file if required, otherwise act as a no-op. */
+    lock(&handle->inode->lock);
+    file_off_t size = handle->inode->size;
+    unlock(&handle->inode->lock);
+    if (end > size) {
+        ret = fs->fs_ops->truncate(handle, end);
+    } else {
+        ret = 0;
+    }
+
+out:
+    put_handle(handle);
+    return ret;
+}
