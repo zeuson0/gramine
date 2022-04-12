@@ -64,8 +64,10 @@ int init_encrypted_files(void);
 /*
  * \brief Retrieve a key.
  *
- * Returns a key with a given name, or NULL if it has not been created yet. Note that the even if
- * the key exists, it might not be set yet (see `struct shim_encrypted_files_key`).
+ * Returns a key with a given name, or NULL if it has not been created yet. Note that even if the
+ * key exists, it might not be set yet (see `struct shim_encrypted_files_key`).
+ *
+ * This does not pass ownership of the key: the key objects are still managed by this module.
  */
 struct shim_encrypted_files_key* get_encrypted_files_key(const char* name);
 
@@ -81,6 +83,8 @@ int list_encrypted_files_keys(int (*callback)(struct shim_encrypted_files_key* k
  * \brief Retrieve or create a key.
  *
  * Sets `*out_key` to a key with given name. If the key has not been created yet, creates a new one.
+ *
+ * Similar to `get_encrypted_files_key`, this does not pass ownership of `*out_key`.
  */
 int get_or_create_encrypted_files_key(const char* name, struct shim_encrypted_files_key** out_key);
 

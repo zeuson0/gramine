@@ -317,15 +317,18 @@ int list_encrypted_files_keys(int (*callback)(struct shim_encrypted_files_key* k
                               void* arg) {
     lock(&g_keys_lock);
 
+    int ret;
+
     struct shim_encrypted_files_key* key;
     LISTP_FOR_EACH_ENTRY(key, &g_keys, list) {
-        int ret = callback(key, arg);
+        ret = callback(key, arg);
         if (ret < 0)
-            return ret;
+            goto out;
     }
-
+    ret = 0;
+out:
     unlock(&g_keys_lock);
-    return 0;
+    return ret;
 }
 
 int get_or_create_encrypted_files_key(const char* name, struct shim_encrypted_files_key** out_key) {
@@ -663,6 +666,11 @@ BEGIN_RS_FUNC(encrypted_files_key) {
 
     CP_REBASE(migrated_key->name);
 
+    /*
+     * NOTE: We do not add `migrated_key` directly to the list, because a key with this name might
+     * already have been created (e.g. during `init_encrypted_files`). Instead, we retrieve (or
+     * create) a key in the usual way, and update its value.
+     */
     struct shim_encrypted_files_key* key;
     int ret = get_or_create_encrypted_files_key(migrated_key->name, &key);
     if (ret < 0)

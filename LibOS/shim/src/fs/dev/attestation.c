@@ -336,7 +336,7 @@ static int key_save(struct shim_dentry* dent, const char* data, size_t size) {
         return -ENOENT;
 
     if (size != KEY_HEX_LEN) {
-        log_debug("/dev/attestation/protected_files_key: invalid length");
+        log_debug("/dev/attestation/keys: invalid length");
         return -EACCES;
     }
 
@@ -357,6 +357,9 @@ int init_attestation(struct pseudo_node* dev) {
     struct pseudo_node* attestation = pseudo_add_dir(dev, "attestation");
 
     if (!strcmp(g_pal_public_state->host_type, "Linux-SGX")) {
+        log_debug("host is Linux-SGX, adding SGX-specific /dev/attestation files: "
+                  "report, quote, etc.");
+
         struct pseudo_node* user_report_data = pseudo_add_str(attestation, "user_report_data", NULL);
         user_report_data->perm = PSEUDO_PERM_FILE_RW;
         user_report_data->str.save = &user_report_data_save;
