@@ -574,23 +574,16 @@ long shim_do_fallocate(int fd, int mode, loff_t offset, loff_t len) {
     if (!handle) {
         return -EBADF;
     }
-    switch (handle->type) {
-        case TYPE_CHROOT:
-        case TYPE_CHROOT_ENCRYPTED:
-            break;
-        case TYPE_PIPE:
-            ret = -ESPIPE;
-            goto out;
-        default:
-            ret = -ENODEV;
-            goto out;
+    if (handle->type == TYPE_PIPE) {
+        ret = -ESPIPE;
+        goto out;
+    }
+    if (!handle->inode || handle->inode->type != S_IFREG) {
+        ret = -ENODEV;
+        goto out;
     }
 
     if (!(handle->acc_mode & MAY_WRITE)) {
-        ret = -EBADF;
-        goto out;
-    }
-    if (handle->is_dir) {
         ret = -EBADF;
         goto out;
     }
@@ -611,7 +604,11 @@ long shim_do_fallocate(int fd, int mode, loff_t offset, loff_t len) {
         goto out;
     }
 
-    /* Simple implemenation: extend the file if required, otherwise act as a no-op. */
+    /* Simple implemenation: extend the file if required, otherwise act as a no-op.
+     * WARNING: if two threads try doing `fallocate` at the same time with 2 different sizes (and
+     * both bigger than the current size) or one does `fallocate` and the other tries writing to
+     * the end of the file, there is a possibility of a race which would actually truncate the file.
+     * Hopefully no sane application does that. */
     lock(&handle->inode->lock);
     file_off_t size = handle->inode->size;
     unlock(&handle->inode->lock);

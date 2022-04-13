@@ -61,7 +61,10 @@ static int generic_istat(struct shim_inode* inode, struct stat* buf) {
     lock(&inode->lock);
     buf->st_mode = inode->type | inode->perm;
     buf->st_size = inode->size;
-    buf->st_blksize = PAGE_SIZE;
+    /* Some programs (e.g. some tests from LTP) require this value. We've picked some random,
+     * pretty looking constant - exact value should not affect anything (perhaps except
+     * performance). */
+    buf->st_blksize = 0x1000;
     /*
      * Pretend `nlink` is 2 for directories (to account for "." and ".."), 1 for other files.
      *
