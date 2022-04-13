@@ -604,7 +604,7 @@ long shim_do_fallocate(int fd, int mode, loff_t offset, loff_t len) {
         goto out;
     }
 
-    /* Simple implemenation: extend the file if required, otherwise act as a no-op.
+    /* Simple implementation: extend the file if required, otherwise act as a no-op.
      * WARNING: if two threads try doing `fallocate` at the same time with 2 different sizes (and
      * both bigger than the current size) or one does `fallocate` and the other tries writing to
      * the end of the file, there is a possibility of a race which would actually truncate the file.
