@@ -196,6 +196,28 @@ static int encrypted_file_internal_open(struct shim_encrypted_file* enc, PAL_HAN
     return 0;
 }
 
+static int parse_pf_key(const char* key_str, pf_key_t* pf_key) {
+    size_t len = strlen(key_str);
+    if (len != PF_KEY_SIZE * 2) {
+        log_warning("%s: wrong key length (%zu instead of %zu)", __func__, len,
+                    (size_t)(PF_KEY_SIZE * 2));
+        return -1;
+    }
+
+    pf_key_t tmp_pf_key;
+    for (size_t i = 0; i < len; i += 2) {
+        int8_t hi = hex2dec(key_str[i]);
+        int8_t lo = hex2dec(key_str[i+1]);
+        if (hi < 0 || lo < 0) {
+            log_warning("%s: unexpected character encountered", __func__);
+            return -1;
+        }
+        tmp_pf_key[i / 2] = hi * 16 + lo;
+    }
+    memcpy(pf_key, &tmp_pf_key, sizeof(tmp_pf_key));
+    return 0;
+}
+
 static void encrypted_file_internal_close(struct shim_encrypted_file* enc) {
     assert(enc->pf);
 
@@ -256,12 +278,15 @@ int init_encrypted_files(void) {
         }
         assert(key_str);
 
-        ret = update_encrypted_files_key(key, key_str);
+        pf_key_t pf_key;
+        ret = parse_pf_key(key_str, &pf_key);
         if (ret < 0) {
-            log_error("Cannot update key '%s': %d", name, ret);
+            log_error("Cannot parse key 'fs.insecure__keys.%s' as a hex key", name);
+            ret = -EINVAL;
             goto out;
-
         }
+
+        update_encrypted_files_key(key, &pf_key);
         free(key_str);
         key_str = NULL;
     }
@@ -346,54 +371,21 @@ int get_or_create_encrypted_files_key(const char* name, struct shim_encrypted_fi
     return 0;
 }
 
-int read_encrypted_files_key(struct shim_encrypted_files_key* key, char* buf, size_t buf_size) {
-    size_t key_size = sizeof(key->pf_key);
-    if (buf_size < key_size * 2 + 1)
-        return -EINVAL;
-
+bool read_encrypted_files_key(struct shim_encrypted_files_key* key, pf_key_t* pf_key) {
     lock(&g_keys_lock);
-    if (key->is_set) {
-        for (size_t i = 0; i < key_size; i++) {
-            buf[i * 2]     = dec2hex(key->pf_key[i] / 16);
-            buf[i * 2 + 1] = dec2hex(key->pf_key[i] % 16);
-        }
-        buf[key_size * 2] = '\0';
-    } else {
-        buf[0] = '\0';
+    bool is_set = key->is_set;
+    if (is_set) {
+        memcpy(pf_key, &key->pf_key, sizeof(key->pf_key));
     }
     unlock(&g_keys_lock);
-    return 0;
+    return is_set;
 }
 
-int update_encrypted_files_key(struct shim_encrypted_files_key* key, const char* key_str) {
-    int ret;
-
+void update_encrypted_files_key(struct shim_encrypted_files_key* key, const pf_key_t* pf_key) {
     lock(&g_keys_lock);
-    size_t len = strlen(key_str);
-    if (len != PF_KEY_SIZE * 2) {
-        log_warning("%s: wrong key length (%zu instead of %zu)", __func__, len,
-                    (size_t)(PF_KEY_SIZE * 2));
-        ret = -EINVAL;
-        goto out;
-    }
-
-    pf_key_t pf_key;
-    for (size_t i = 0; i < len; i += 2) {
-        int8_t hi = hex2dec(key_str[i]);
-        int8_t lo = hex2dec(key_str[i+1]);
-        if (hi < 0 || lo < 0) {
-            log_warning("%s: unexpected character encountered", __func__);
-            ret = -EINVAL;
-            goto out;
-        }
-        pf_key[i / 2] = hi * 16 + lo;
-    }
-    memcpy(key->pf_key, &pf_key, sizeof(pf_key));
+    memcpy(&key->pf_key, pf_key, sizeof(*pf_key));
     key->is_set = true;
-    ret = 0;
-out:
     unlock(&g_keys_lock);
-    return ret;
 }
 
 static int encrypted_file_alloc(const char* uri, struct shim_encrypted_files_key* key,

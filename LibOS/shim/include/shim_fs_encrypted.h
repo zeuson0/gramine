@@ -20,8 +20,6 @@
 #include "protected_files.h"
 #include "shim_types.h"
 
-#define KEY_HEX_LEN (2 * sizeof(pf_key_t))
-
 /*
  * Represents a named key for opening files. The key might not be set yet: value of a key can be
  * specified in the manifest, or set using `update_encrypted_files_key`. Before the key is set,
@@ -91,23 +89,23 @@ int get_or_create_encrypted_files_key(const char* name, struct shim_encrypted_fi
 /*
  * \brief Read value of given key.
  *
- * \param key       The key to read.
- * \param buf       Buffer for new value.
- * \param buf_size  Size of the buffer. Must be at least KEY_HEX_LEN + 1.
+ * \param      key     The key to read.
+ * \param[out] pf_key  On success, will be set to new value.
  *
- * Writes the current value of the key to `buf`, as a null-terminated hex string. If the key is not
- * set yet, `buf` will contain an empty string.
+ * \returns `true` if the key has a value, `false` otherwise
+ *
+ * If the key has already been set, writes its value to `*pf_key` and returns `true`. Otherwise,
+ * returns `false`.
  */
-int read_encrypted_files_key(struct shim_encrypted_files_key* key, char* buf, size_t buf_size);
+bool read_encrypted_files_key(struct shim_encrypted_files_key* key, pf_key_t* pf_key);
 
 /*
  * \brief Update value of given key.
  *
- * \param key      The key to update.
- * \param key_str  New value for the key. Must be a null-terminated hex string (AES-GCM
- *                 encryption key), KEY_HEX_LEN characters long.
+ * \param key     The key to update.
+ * \param pf_key  New value for the key.
  */
-int update_encrypted_files_key(struct shim_encrypted_files_key* key, const char* key_str);
+void update_encrypted_files_key(struct shim_encrypted_files_key* key, const pf_key_t* pf_key);
 
 /*
  * \brief Open an existing encrypted file.

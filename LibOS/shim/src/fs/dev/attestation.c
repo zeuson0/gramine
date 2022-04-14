@@ -314,19 +314,21 @@ static int key_load(struct shim_dentry* dent, char** out_data, size_t* out_size)
     if (!key)
         return -ENOENT;
 
-    size_t buf_size = KEY_HEX_LEN + 1;
-    char* buf = malloc(buf_size);
-    if (!buf)
-        return -ENOMEM;
+    pf_key_t pf_key;
+    bool is_set = read_encrypted_files_key(key, &pf_key);
 
-    int ret = read_encrypted_files_key(key, buf, buf_size);
-    if (ret < 0) {
-        free(buf);
-        return ret;
+    if (is_set) {
+        char* buf = malloc(sizeof(pf_key));
+        if (!buf)
+            return -ENOMEM;
+        memcpy(buf, &pf_key, sizeof(pf_key));
+
+        *out_data = buf;
+        *out_size = sizeof(pf_key);
+    } else {
+        *out_data = NULL;
+        *out_size = 0;
     }
-
-    *out_data = buf;
-    *out_size = strlen(buf);
     return 0;
 }
 
@@ -335,20 +337,14 @@ static int key_save(struct shim_dentry* dent, const char* data, size_t size) {
     if (!key)
         return -ENOENT;
 
-    if (size != KEY_HEX_LEN) {
+    pf_key_t pf_key;
+    if (size != sizeof(pf_key)) {
         log_debug("/dev/attestation/keys: invalid length");
         return -EACCES;
     }
 
-    /* Build a null-terminated string */
-    char buf[KEY_HEX_LEN + 1];
-    memcpy(buf, data, KEY_HEX_LEN);
-    buf[KEY_HEX_LEN] = '\0';
-
-    int ret = update_encrypted_files_key(key, buf);
-    if (ret < 0)
-        return -EACCES;
-
+    memcpy(&pf_key, data, sizeof(pf_key));
+    update_encrypted_files_key(key, &pf_key);
     return 0;
 }
 
