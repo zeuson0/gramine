@@ -37,7 +37,7 @@ static const pf_key_t new_custom_key = {
     0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77};
 
 static void format_key(char buf[static KEY_STR_SIZE], const pf_key_t* key) {
-    const char* hex = "01234567890abcdef";
+    const char* hex = "0123456789abcdef";
 
     for (size_t i = 0; i < KEY_SIZE; i++) {
         uint8_t byte = (*key)[i];
@@ -50,10 +50,10 @@ static void format_key(char buf[static KEY_STR_SIZE], const pf_key_t* key) {
 static void expect_key(const char* desc, const char* path, const pf_key_t* expected_key) {
     pf_key_t key;
 
-    ssize_t n = posix_file_read(path, (char*)key, sizeof(key));
+    ssize_t n = posix_file_read(path, (char*)&key, sizeof(key));
     if (n < 0)
         err(1, "%s: error reading %s", desc, path);
-    if (n < (ssize_t)sizeof(key))
+    if ((size_t)n < sizeof(key))
         errx(1, "%s: file %s is too short: %zd", desc, path, n);
 
     if (memcmp(&key, expected_key, sizeof(*expected_key))) {
@@ -71,7 +71,7 @@ static void write_key(const char* desc, const char* path, const pf_key_t* key) {
     ssize_t n = posix_file_write(path, (char*)key, sizeof(*key));
     if (n < 0)
         err(1, "%s: error writing %s", desc, path);
-    if (n < (ssize_t)sizeof(*key))
+    if ((size_t)n < sizeof(*key))
         errx(1, "%s: not enough bytes written to %s: %zd", desc, path, n);
 }
 
@@ -79,10 +79,12 @@ int main(void) {
     expect_key("before writing key", DEFAULT_KEY_PATH, &default_key);
     expect_key("before writing key", CUSTOM_KEY_PATH, &custom_key);
 
+    /* Perform invalid write (size too small), Gramine's `write` syscall should fail */
     ssize_t n = posix_file_write(CUSTOM_KEY_PATH, (char*)&new_custom_key,
                                  sizeof(new_custom_key) - 1);
     if (n >= 0 || (n < 0 && errno != EACCES))
         err(1, "writing invalid key: expected EACCES");
+
     expect_key("after writing invalid key", CUSTOM_KEY_PATH, &custom_key);
 
     write_key("writing key", CUSTOM_KEY_PATH, &new_custom_key);

@@ -90,7 +90,7 @@ int get_or_create_encrypted_files_key(const char* name, struct shim_encrypted_fi
  * \brief Read value of given key.
  *
  * \param      key     The key to read.
- * \param[out] pf_key  On success, will be set to new value.
+ * \param[out] pf_key  On success, will be set to the current value.
  *
  * \returns `true` if the key has a value, `false` otherwise
  *
