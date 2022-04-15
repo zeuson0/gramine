@@ -122,7 +122,7 @@ static int mount_root(void) {
 
     struct shim_mount_params params = {
         .path = "/",
-        .key = fs_root_key,
+        .key_name = fs_root_key,
     };
 
     if (!fs_root_type && !fs_root_uri) {
@@ -275,7 +275,7 @@ static int mount_one_nonroot(toml_table_t* mount, const char* prefix) {
         .type = mount_type ?: "chroot",
         .path = mount_path,
         .uri = mount_uri,
-        .key = mount_key,
+        .key_name = mount_key,
     };
     ret = mount_fs(&params);
 

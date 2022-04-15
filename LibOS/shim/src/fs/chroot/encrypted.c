@@ -51,7 +51,7 @@ static int chroot_encrypted_mount(struct shim_mount_params* params, void** mount
     if (!params->uri || !strstartswith(params->uri, URI_PREFIX_FILE))
         return -EINVAL;
 
-    const char* key_name = params->key ?: "default";
+    const char* key_name = params->key_name ?: "default";
 
     struct shim_encrypted_files_key* key;
     int ret = get_or_create_encrypted_files_key(key_name, &key);
