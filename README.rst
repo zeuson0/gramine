@@ -1,6 +1,7 @@
 *****************************************
 Gramine Library OS with Intel SGX Support
 *****************************************
+Note: this branch is for ppml patches on gramine.
 
 .. image:: https://readthedocs.org/projects/gramine/badge/?version=latest
    :target: http://gramine.readthedocs.io/en/latest/?badge=latest
