@@ -6,6 +6,7 @@
  */
 
 #include <asm/ioctls.h>
+#include <sys/ioctl.h>
 
 #include "pal.h"
 #include "shim_handle.h"
@@ -34,7 +35,7 @@ long shim_do_ioctl(unsigned int fd, unsigned int cmd, unsigned long arg) {
     if (!hdl)
         return -EBADF;
 
-    int ret;
+    int ret = 0;
     switch (cmd) {
         case TIOCGPGRP:
             if (!hdl->uri || strcmp(hdl->uri, "dev:tty") != 0) {
@@ -109,6 +110,15 @@ long shim_do_ioctl(unsigned int fd, unsigned int cmd, unsigned long arg) {
             ret = 0;
             break;
         }
+        case SIOCGIFCONF:
+        case SIOCGIFHWADDR:
+            if (hdl->type == TYPE_SOCK) {
+                /* LibOS doesn't know how to handle this IOCTL, forward it to the host */
+                ret = DkDeviceIoControl(hdl->pal_handle, cmd, arg);
+                if (ret < 0)
+                    ret = pal_to_unix_errno(ret);
+            }
+            break;
         default:
             ret = -ENOSYS;
             break;

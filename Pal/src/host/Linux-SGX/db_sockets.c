@@ -306,15 +306,15 @@ static int tcp_accept(PAL_HANDLE handle, PAL_HANDLE* client, pal_stream_options_
     if (handle->sock.fd == PAL_IDX_POISON)
         return -PAL_ERROR_BADHANDLE;
 
-    struct sockaddr* bind_addr = handle->sock.bind;
-    size_t bind_addrlen = addr_size(bind_addr);
+    struct sockaddr_storage bind_addr;
+    size_t bind_addrlen = sizeof(bind_addr);
     struct sockaddr_storage dest_addr;
     size_t dest_addrlen = sizeof(dest_addr);
     int ret = 0;
     static_assert(O_CLOEXEC == SOCK_CLOEXEC && O_NONBLOCK == SOCK_NONBLOCK, "assumed below");
     int flags = PAL_OPTION_TO_LINUX_OPEN(options);
 
-    ret = ocall_accept(handle->sock.fd, (struct sockaddr*)&dest_addr, &dest_addrlen, flags);
+    ret = ocall_accept(handle->sock.fd, (struct sockaddr*)&dest_addr, &dest_addrlen, (struct sockaddr*)&bind_addr, &bind_addrlen, flags);
     if (ret < 0)
         return unix_to_pal_error(ret);
 
@@ -322,7 +322,7 @@ static int tcp_accept(PAL_HANDLE handle, PAL_HANDLE* client, pal_stream_options_
         .reuseaddr = 1, /* sockets are always set as reusable in Gramine */
     };
 
-    *client = socket_create_handle(PAL_TYPE_TCP, ret, options, bind_addr, bind_addrlen,
+    *client = socket_create_handle(PAL_TYPE_TCP, ret, options, (struct sockaddr*)&bind_addr, bind_addrlen,
                                    (struct sockaddr*)&dest_addr, dest_addrlen, &sock_options);
 
     if (!(*client)) {

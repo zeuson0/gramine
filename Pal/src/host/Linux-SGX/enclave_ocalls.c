@@ -280,7 +280,7 @@ int ocall_munmap_untrusted(const void* addr, size_t size) {
  * handling do not use the cache and always explicitly mmap/munmap untrusted memory; 'need_munmap'
  * indicates whether explicit munmap is needed at the end of such OCALL.
  */
-static int ocall_mmap_untrusted_cache(size_t size, void** addrptr, bool* need_munmap) {
+int ocall_mmap_untrusted_cache(size_t size, void** addrptr, bool* need_munmap) {
     int ret;
 
     *addrptr = NULL;
@@ -328,7 +328,7 @@ static int ocall_mmap_untrusted_cache(size_t size, void** addrptr, bool* need_mu
     return ret;
 }
 
-static void ocall_munmap_untrusted_cache(void* addr, size_t size, bool need_munmap) {
+void ocall_munmap_untrusted_cache(void* addr, size_t size, bool need_munmap) {
     if (need_munmap) {
         ocall_munmap_untrusted(addr, size);
         /* there is not much we can do in case of error */
@@ -1134,9 +1134,10 @@ int ocall_listen(int domain, int type, int protocol, int ipv6_v6only, struct soc
     return retval;
 }
 
-int ocall_accept(int sockfd, struct sockaddr* addr, size_t* addrlen, int options) {
+int ocall_accept(int sockfd, struct sockaddr* addr, size_t* addrlen, struct sockaddr* bind_addr, size_t* bind_addrlen, int options) {
     int retval = 0;
     size_t len = addrlen ? *addrlen : 0;
+    size_t bind_len = bind_addrlen ? *bind_addrlen : 0;
     ms_ocall_accept_t* ms;
 
     void* old_ustack = sgx_prepare_ustack();
@@ -1148,12 +1149,19 @@ int ocall_accept(int sockfd, struct sockaddr* addr, size_t* addrlen, int options
 
     WRITE_ONCE(ms->ms_sockfd, sockfd);
     WRITE_ONCE(ms->ms_addrlen, len);
+    WRITE_ONCE(ms->ms_bind_addrlen, bind_len);
     void* untrusted_addr = (addr && len) ? sgx_copy_to_ustack(addr, len) : NULL;
     if (addr && len && !untrusted_addr) {
         sgx_reset_ustack(old_ustack);
         return -EPERM;
     }
+    void* untrusted_bind_addr = (bind_addr && bind_len) ? sgx_copy_to_ustack(bind_addr, bind_len) : NULL;
+    if (bind_addr && bind_len && !untrusted_bind_addr) {
+        sgx_reset_ustack(old_ustack);
+        return -EPERM;
+    }
     WRITE_ONCE(ms->ms_addr, untrusted_addr);
+    WRITE_ONCE(ms->ms_bind_addr, untrusted_bind_addr);
     WRITE_ONCE(ms->options, options);
 
     retval = sgx_exitless_ocall(OCALL_ACCEPT, ms);
@@ -1173,6 +1181,14 @@ int ocall_accept(int sockfd, struct sockaddr* addr, size_t* addrlen, int options
                 return -EPERM;
             }
             *addrlen = untrusted_addrlen;
+        }
+        if (bind_addr && bind_len) {
+            size_t untrusted_bind_addrlen = READ_ONCE(ms->ms_bind_addrlen);
+            if (!sgx_copy_to_enclave(bind_addr, len, READ_ONCE(ms->ms_bind_addr), untrusted_bind_addrlen)) {
+                sgx_reset_ustack(old_ustack);
+                return -EPERM;
+            }
+            *bind_addrlen = untrusted_bind_addrlen;
         }
     }
 
@@ -1943,6 +1959,27 @@ int ocall_sched_getaffinity(void* tcs, size_t cpumask_size, void* cpu_mask) {
 
     if (retval > 0 && !is_cpumask_valid(cpu_mask, cpumask_size))
         retval = -EPERM;
+
+    sgx_reset_ustack(old_ustack);
+    return retval;
+}
+
+int ocall_ioctl(int fd, unsigned int cmd, unsigned long arg) {
+    int retval = 0;
+    ms_ocall_ioctl_t* ms;
+
+    void* old_ustack = sgx_prepare_ustack();
+    ms = sgx_alloc_on_ustack_aligned(sizeof(*ms), alignof(*ms));
+    if (!ms) {
+        sgx_reset_ustack(old_ustack);
+        return -EPERM;
+    }
+
+    WRITE_ONCE(ms->ms_fd, fd);
+    WRITE_ONCE(ms->ms_cmd, cmd);
+    WRITE_ONCE(ms->ms_arg, arg);
+
+    retval = sgx_exitless_ocall(OCALL_IOCTL, ms);
 
     sgx_reset_ustack(old_ustack);
     return retval;

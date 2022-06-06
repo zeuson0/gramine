@@ -16,6 +16,10 @@ int ocall_mmap_untrusted(void** addrptr, size_t size, int prot, int flags, int f
 
 int ocall_munmap_untrusted(const void* addr, size_t size);
 
+int ocall_mmap_untrusted_cache(size_t size, void** mem, bool* need_munmap);
+
+void ocall_munmap_untrusted_cache(void* mem, size_t size, bool need_munmap);
+
 int ocall_cpuid(unsigned int leaf, unsigned int subleaf, unsigned int values[4]);
 
 int ocall_open(const char* pathname, int flags, unsigned short mode);
@@ -49,7 +53,7 @@ int ocall_getdents(int fd, struct linux_dirent64* dirp, size_t size);
 int ocall_listen(int domain, int type, int protocol, int ipv6_v6only, struct sockaddr* addr,
                  size_t* addrlen);
 
-int ocall_accept(int sockfd, struct sockaddr* addr, size_t* addrlen, int options);
+int ocall_accept(int sockfd, struct sockaddr* addr, size_t* addrlen, struct sockaddr* bind_addr, size_t* bind_addrlen, int options);
 
 int ocall_connect(int domain, int type, int protocol, int ipv6_v6only, const struct sockaddr* addr,
                   size_t addrlen, struct sockaddr* bind_addr, size_t* bind_addrlen);
@@ -93,6 +97,8 @@ int ocall_debug_map_remove(void* addr);
 int ocall_debug_describe_location(uintptr_t addr, char* buf, size_t buf_size);
 
 int ocall_eventfd(int flags);
+
+int ocall_ioctl(int fd, unsigned int cmd, unsigned long arg);
 
 /*!
  * \brief Execute untrusted code in PAL to obtain a quote from the Quoting Enclave.
