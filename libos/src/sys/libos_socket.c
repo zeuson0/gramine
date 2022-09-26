@@ -613,7 +613,7 @@ ssize_t do_sendmsg(struct libos_handle* handle, struct iovec* iov, size_t iov_le
     if (handle->type != TYPE_SOCK) {
         return -ENOTSOCK;
     }
-    if (!WITHIN_MASK(flags, MSG_NOSIGNAL | MSG_DONTWAIT)) {
+    if (!WITHIN_MASK(flags, MSG_NOSIGNAL | MSG_DONTWAIT | MSG_MORE)) {
         return -EOPNOTSUPP;
     }
 
