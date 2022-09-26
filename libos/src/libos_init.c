@@ -86,7 +86,7 @@ long pal_to_unix_errno(long err) {
 void* migrated_memory_start;
 void* migrated_memory_end;
 
-const char** migrated_envp __attribute_migratable;
+const char* const* migrated_envp __attribute_migratable;
 
 /* `g_library_paths` is populated with LD_PRELOAD entries once during LibOS initialization and is
  * used in `__load_interp_object()` to search for ELF program interpreter in specific paths. Once
@@ -98,8 +98,6 @@ void* allocate_stack(size_t size, size_t protect_size, bool user) {
 
     size = ALLOC_ALIGN_UP(size);
     protect_size = ALLOC_ALIGN_UP(protect_size);
-
-    log_debug("Allocating stack at %p (size = %ld)", stack, size);
 
     if (!user) {
         stack = system_malloc(size + protect_size);
@@ -157,8 +155,8 @@ out_fail:;
 /* populate already-allocated stack with copied argv and envp and space for auxv;
  * returns a pointer to first stack frame (starting with argc, then argv pointers, and so on)
  * and a pointer inside first stack frame (with auxv[0], auxv[1], and so on) */
-static int populate_stack(void* stack, size_t stack_size, const char** argv, const char** envp,
-                          const char*** out_argp, elf_auxv_t** out_auxv) {
+static int populate_stack(void* stack, size_t stack_size, const char* const* argv,
+                          const char* const* envp, char*** out_argp, elf_auxv_t** out_auxv) {
     void* stack_low_addr  = stack;
     void* stack_high_addr = stack + stack_size;
 
@@ -199,7 +197,7 @@ static int populate_stack(void* stack, size_t stack_size, const char** argv, con
      */
     size_t argc      = 0;
     size_t argv_size = 0;
-    for (const char** a = argv; *a; a++) {
+    for (const char* const* a = argv; *a; a++) {
         argv_size += strlen(*a) + 1;
         argc++;
     }
@@ -216,32 +214,32 @@ static int populate_stack(void* stack, size_t stack_size, const char** argv, con
     /* Even though the SysV ABI does not specify the order of argv strings, some applications
      * (notably Node.js's libuv) assume the compact encoding of argv where (1) all strings are
      * located adjacently and (2) in increasing order. */
-    const char** new_argv = stack_low_addr;
-    for (const char** a = argv; *a; a++) {
+    char** new_argv = stack_low_addr;
+    for (const char* const* a = argv; *a; a++) {
         size_t size = strlen(*a) + 1;
-        const char** argv_ptr = ALLOCATE_FROM_LOW_ADDR(sizeof(const char*));  /* ptr to argv[i] */
-        memcpy(argv_str, *a, size);                                           /* argv[i] string */
+        char** argv_ptr = ALLOCATE_FROM_LOW_ADDR(sizeof(char*)); /* ptr to argv[i] */
+        memcpy(argv_str, *a, size);                              /* argv[i] string */
         *argv_ptr = argv_str;
         argv_str += size;
     }
-    *((const char**)ALLOCATE_FROM_LOW_ADDR(sizeof(const char*))) = NULL;
+    *((char**)ALLOCATE_FROM_LOW_ADDR(sizeof(char*))) = NULL;
 
     /* populate envp on stack similarly to argv */
     size_t envp_size = 0;
-    for (const char** e = envp; *e; e++) {
+    for (const char* const* e = envp; *e; e++) {
         envp_size += strlen(*e) + 1;
     }
     char* envp_str = ALLOCATE_FROM_HIGH_ADDR(envp_size);
 
-    const char** new_envp = stack_low_addr;
-    for (const char** e = envp; *e; e++) {
+    char** new_envp = stack_low_addr;
+    for (const char* const* e = envp; *e; e++) {
         size_t size = strlen(*e) + 1;
-        const char** envp_ptr = ALLOCATE_FROM_LOW_ADDR(sizeof(const char*)); /* ptr to envp[i] */
-        memcpy(envp_str, *e, size);                                          /* envp[i] string */
+        char** envp_ptr = ALLOCATE_FROM_LOW_ADDR(sizeof(char*)); /* ptr to envp[i] */
+        memcpy(envp_str, *e, size);                              /* envp[i] string */
         *envp_ptr = envp_str;
         envp_str += size;
     }
-    *((const char**)ALLOCATE_FROM_LOW_ADDR(sizeof(const char*))) = NULL;
+    *((char**)ALLOCATE_FROM_LOW_ADDR(sizeof(char*))) = NULL;
 
     /* reserve space for ELF aux vectors, populated later in execute_elf_object() */
     elf_auxv_t* new_auxv = ALLOCATE_FROM_LOW_ADDR(REQUIRED_ELF_AUXV * sizeof(elf_auxv_t) +
@@ -271,14 +269,14 @@ static int populate_stack(void* stack, size_t stack_size, const char** argv, con
     /* set global envp pointer for future checkpoint/migration: this is required for fork/clone
      * case (so that migrated envp points to envvars on the migrated stack) and redundant for
      * execve case (because execve passes an explicit list of envvars to child process) */
-    migrated_envp = new_envp;
+    migrated_envp = (const char* const*)new_envp;
 
     *out_argp = new_stack_low_addr;
     *out_auxv = new_auxv;
     return 0;
 }
 
-int init_stack(const char** argv, const char** envp, const char*** out_argp,
+int init_stack(const char* const* argv, const char* const* envp, char*** out_argp,
                elf_auxv_t** out_auxv) {
     int ret;
 
@@ -302,6 +300,8 @@ int init_stack(const char** argv, const char** envp, const char*** out_argp,
     if (!stack)
         return -ENOMEM;
 
+    log_debug("Allocated stack at %p (size = %#lx)", stack, stack_size);
+
     /* if there is envp inherited from parent, use it */
     envp = migrated_envp ?: envp;
 
@@ -315,8 +315,8 @@ int init_stack(const char** argv, const char** envp, const char*** out_argp,
     return 0;
 }
 
-static int read_environs(const char** envp) {
-    for (const char** e = envp; *e; e++) {
+static int read_environs(const char* const* envp) {
+    for (const char* const* e = envp; *e; e++) {
         if (strstartswith(*e, "LD_LIBRARY_PATH=")) {
             /* populate `g_library_paths` with entries from LD_LIBRARY_PATH envvar */
             const char* s = *e + static_strlen("LD_LIBRARY_PATH=");
@@ -366,7 +366,7 @@ static int read_environs(const char** envp) {
         }                                                                   \
     } while (0)
 
-noreturn void* libos_init(int argc, const char** argv, const char** envp) {
+noreturn void libos_init(const char* const* argv, const char* const* envp) {
     g_pal_public_state = PalGetPalPublicState();
     assert(g_pal_public_state);
 
@@ -401,7 +401,7 @@ noreturn void* libos_init(int argc, const char** argv, const char** envp) {
     RUN_INIT(init_handle);
     RUN_INIT(init_r_debug);
 
-    log_debug("Shim loaded at %p, ready to initialize", &__load_address);
+    log_debug("LibOS loaded at %p, ready to initialize", &__load_address);
 
     if (g_pal_public_state->parent_process) {
         struct checkpoint_hdr hdr;
@@ -419,22 +419,31 @@ noreturn void* libos_init(int argc, const char** argv, const char** envp) {
     }
 
     RUN_INIT(init_ipc);
-    RUN_INIT(init_process, argc, argv);
+    RUN_INIT(init_process);
     RUN_INIT(init_mount_root);
     RUN_INIT(init_threading);
     RUN_INIT(init_mount);
-    RUN_INIT(init_important_handles);
+    RUN_INIT(init_std_handles);
+
+    char** expanded_argv = NULL;
+    RUN_INIT(init_exec_handle, argv, &expanded_argv);
+    RUN_INIT(init_process_cmdline, expanded_argv ? (const char* const*)expanded_argv : argv);
 
     /* Update log prefix after we initialized `g_process.exec` */
     log_setprefix(libos_get_tcb());
 
     RUN_INIT(init_async_worker);
 
-    const char** new_argp;
+    char** new_argv;
     elf_auxv_t* new_auxv;
-    RUN_INIT(init_stack, argv, envp, &new_argp, &new_auxv);
+    RUN_INIT(init_stack, expanded_argv ? (const char* const*)expanded_argv : argv, envp, &new_argv,
+             &new_auxv);
 
-    /* TODO: Support running non-ELF executables (scripts) */
+    if (expanded_argv) {
+        free(*expanded_argv);
+        free(expanded_argv);
+    }
+
     RUN_INIT(init_elf_objects);
     RUN_INIT(init_signal_handling);
     RUN_INIT(init_ipc_worker);
@@ -478,6 +487,10 @@ noreturn void* libos_init(int argc, const char** argv, const char** envp) {
      * communicates with server over a "loopback" IPC connection. */
     RUN_INIT(init_sync_client);
 
+    /* XXX: this will break uname checkpointing (if we implement it). */
+    RUN_INIT(set_hostname, g_pal_public_state->dns_host.hostname,
+             strlen(g_pal_public_state->dns_host.hostname));
+
     log_debug("LibOS initialized");
 
     libos_tcb_t* cur_tcb = libos_get_tcb();
@@ -491,10 +504,11 @@ noreturn void* libos_init(int argc, const char** argv, const char** envp) {
 
     /* At this point, the exec map has been either copied from checkpoint, or initialized in
      * `init_loader`. */
-    execute_elf_object(/*exec_map=*/NULL, new_argp, new_auxv);
+    execute_elf_object(/*exec_map=*/NULL, new_argv, new_auxv);
     /* UNREACHABLE */
 }
 
+/* Warning: not side-channel-resistant! But we don't need this property in the current callsites. */
 static int get_256b_random_hex_string(char* buf, size_t size) {
     char random[32]; /* 256-bit random value, sufficiently crypto secure */
 
@@ -533,6 +547,8 @@ int create_pipe(char* name, char* uri, size_t size, PAL_HANDLE* hdl, bool use_vm
             if (len >= sizeof(pipename))
                 return -ERANGE;
         } else {
+            /* No need for a side-channel-resistant hex conversion, this name is known to the
+             * untrusted host anyways. */
             ret = get_256b_random_hex_string(pipename, sizeof(pipename));
             if (ret < 0)
                 return ret;

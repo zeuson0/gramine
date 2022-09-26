@@ -13,11 +13,11 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#include "atomic.h"  // TODO: migrate to stdatomic.h
 #include "libos_defs.h"
 #include "libos_fs_mem.h"
 #include "libos_lock.h"
 #include "libos_pollable_event.h"
+#include "libos_refcount.h"
 #include "libos_sync.h"
 #include "libos_types.h"
 #include "linux_socket.h"
@@ -81,6 +81,8 @@ enum libos_sock_state {
  * `ops`, `domain`, `type` and `protocol` are read-only and do not need any locking.
  * Access to `peek` struct is protected by `recv_lock`. This lock also ensures proper ordering of
  * stream reads (see the comment in `do_recvmsg` in "libos/src/sys/libos_socket.c").
+ * Access to `force_nonblocking_users_count` is protected by the lock of the handle wrapping this
+ * struct.
  * `pal_handle` should be accessed using atomic operations.
  * If you need to take both `recv_lock` and `lock`, take the former first.
  */
@@ -105,9 +107,11 @@ struct libos_sock_handle {
         size_t data_size;
     } peek;
     struct libos_lock recv_lock;
-    unsigned int last_error;
+    /* This field is only used by UNIX sockets. */
+    size_t force_nonblocking_users_count;
     uint64_t sendtimeout_us;
     uint64_t receivetimeout_us;
+    unsigned int last_error;
     /* This field denotes whether the socket was ever bound. */
     bool was_bound;
     /* This field indicates if the socket is ready for read-like operations (`recv`/`read` or
@@ -147,7 +151,7 @@ struct libos_handle {
     enum libos_handle_type type;
     bool is_dir;
 
-    REFTYPE ref_count;
+    refcount_t ref_count;
 
     struct libos_fs* fs;
     struct libos_dentry* dentry;
@@ -236,7 +240,7 @@ struct libos_handle_map {
     uint32_t fd_top;
 
     /* refrence count and lock */
-    REFTYPE ref_count;
+    refcount_t ref_count;
     struct libos_lock lock;
 
     /* An array of file descriptor belong to this mapping */
@@ -268,6 +272,8 @@ int set_new_fd_handle_above_fd(uint32_t fd, struct libos_handle* hdl, int fd_fla
 struct libos_handle* __detach_fd_handle(struct libos_fd_handle* fd, int* flags,
                                         struct libos_handle_map* map);
 struct libos_handle* detach_fd_handle(uint32_t fd, int* flags, struct libos_handle_map* map);
+void detach_all_fds(void);
+void close_cloexec_handles(struct libos_handle_map* map);
 
 /* manage handle mapping */
 int dup_handle_map(struct libos_handle_map** new_map, struct libos_handle_map* old_map);
@@ -277,7 +283,8 @@ int walk_handle_map(int (*callback)(struct libos_fd_handle*, struct libos_handle
                     struct libos_handle_map* map);
 
 int init_handle(void);
-int init_important_handles(void);
+int init_std_handles(void);
+int init_exec_handle(const char* const* argv, char*** out_new_argv);
 
 int open_executable(struct libos_handle* hdl, const char* path);
 

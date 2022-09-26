@@ -1,7 +1,7 @@
 # Client manifest file
 
 loader.entrypoint = "file:{{ gramine.libos }}"
-libos.entrypoint = "client"
+libos.entrypoint = "/client"
 
 loader.log_level = "{{ log_level }}"
 
@@ -19,7 +19,10 @@ fs.mounts = [
   { path = "{{ arch_libdir }}", uri = "file:{{ arch_libdir }}" },
   { path = "/usr{{ arch_libdir }}", uri = "file:/usr{{ arch_libdir }}" },
   { path = "/etc", uri = "file:/etc" },
+  { path = "/client", uri = "file:client" },
 ]
+
+sys.enable_extra_runtime_domain_names_conf = true
 
 sgx.debug = true
 sgx.enclave_size = "512M"
@@ -38,7 +41,6 @@ sgx.trusted_files = [
 sgx.allowed_files = [
   "file:/etc/nsswitch.conf",
   "file:/etc/host.conf",
-  "file:/etc/resolv.conf",
   "file:/etc/ethers",
   "file:/etc/hosts",
   "file:/etc/group",

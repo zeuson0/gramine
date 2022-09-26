@@ -45,6 +45,7 @@ RUN apt-get update && env DEBIAN_FRONTEND=noninteractive apt-get install -y \
     ninja-build \
     pkg-config \
     protobuf-c-compiler \
+    protobuf-compiler \
     pylint3 \
     python \
     python3-apport \
@@ -79,14 +80,14 @@ RUN git clone https://github.com/giltene/wrk2.git \
     && rm -rf wrk2
 
 
-# NOTE about meson version: we support "0.55 or newer", so in CI we pin to latest patch version of
+# NOTE about meson version: we support "0.56 or newer", so in CI we pin to latest patch version of
 # the earliest supported minor version (pip implicitly installs latest version satisfying the
 # specification)
 RUN python3 -m pip install -U \
     'Sphinx==1.8' \
     'sphinx_rtd_theme<1' \
     'toml>=0.10' \
-    'meson>=0.55,<0.56' \
+    'meson>=0.56,<0.57' \
     'docutils>=0.17,<0.18'
 
 # Add the user UID:1001, GID:1001, home at /leeroy

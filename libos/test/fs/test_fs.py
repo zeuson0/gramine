@@ -97,39 +97,8 @@ class TC_00_FileSystem(RegressionTestCase):
         self.assertIn('close(' + file_path + ') RW OK', stdout)
 
     # pylint: disable=too-many-arguments
-    def verify_seek_tell(self, stdout, stderr, input_path, output_path_1, output_path_2, size):
-        self.assertNotIn('ERROR: ', stderr)
-        self.assertIn('open(' + input_path + ') input OK', stdout)
-        self.assertIn('seek(' + input_path + ') input start OK', stdout)
-        self.assertIn('seek(' + input_path + ') input end OK', stdout)
-        self.assertIn('tell(' + input_path + ') input end OK: ' + str(size), stdout)
-        self.assertIn('seek(' + input_path + ') input rewind OK', stdout)
-        self.assertIn('tell(' + input_path + ') input start OK: 0', stdout)
-        self.assertIn('close(' + input_path + ') input OK', stdout)
-        self.assertIn('fopen(' + input_path + ') input OK', stdout)
-        self.assertIn('fseek(' + input_path + ') input start OK', stdout)
-        self.assertIn('fseek(' + input_path + ') input end OK', stdout)
-        self.assertIn('ftell(' + input_path + ') input end OK: ' + str(size), stdout)
-        self.assertIn('fseek(' + input_path + ') input rewind OK', stdout)
-        self.assertIn('ftell(' + input_path + ') input start OK: 0', stdout)
-        self.assertIn('fclose(' + input_path + ') input OK', stdout)
-
-        self.assertIn('open(' + output_path_1 + ') output OK', stdout)
-        self.assertIn('seek(' + output_path_1 + ') output start OK', stdout)
-        self.assertIn('seek(' + output_path_1 + ') output end OK', stdout)
-        self.assertIn('tell(' + output_path_1 + ') output end OK: ' + str(size), stdout)
-        self.assertIn('seek(' + output_path_1 + ') output end 2 OK', stdout)
-        self.assertIn('seek(' + output_path_1 + ') output end 3 OK', stdout)
-        self.assertIn('tell(' + output_path_1 + ') output end 2 OK: ' + str(size + 4098), stdout)
-        self.assertIn('close(' + output_path_1 + ') output OK', stdout)
-        self.assertIn('fopen(' + output_path_2 + ') output OK', stdout)
-        self.assertIn('fseek(' + output_path_2 + ') output start OK', stdout)
-        self.assertIn('fseek(' + output_path_2 + ') output end OK', stdout)
-        self.assertIn('ftell(' + output_path_2 + ') output end OK: ' + str(size), stdout)
-        self.assertIn('fseek(' + output_path_2 + ') output end 2 OK', stdout)
-        self.assertIn('fseek(' + output_path_2 + ') output end 3 OK', stdout)
-        self.assertIn('ftell(' + output_path_2 + ') output end 2 OK: ' + str(size + 4098), stdout)
-        self.assertIn('fclose(' + output_path_2 + ') output OK', stdout)
+    def verify_seek_tell(self, stdout, output_path_1, output_path_2, size):
+        self.assertIn('Test passed', stdout)
 
         expected_size = size + 4098
         self.verify_size(output_path_1, expected_size)
@@ -141,9 +110,8 @@ class TC_00_FileSystem(RegressionTestCase):
         output_path_2 = os.path.join(self.OUTPUT_DIR, 'test_115b')
         self.copy_input(input_path, output_path_1)
         self.copy_input(input_path, output_path_2)
-        stdout, stderr = self.run_binary(['seek_tell', input_path, output_path_1, output_path_2])
-        self.verify_seek_tell(stdout, stderr, input_path, output_path_1, output_path_2,
-                              self.FILE_SIZES[-1])
+        stdout, _ = self.run_binary(['seek_tell', input_path, output_path_1, output_path_2])
+        self.verify_seek_tell(stdout, output_path_1, output_path_2, self.FILE_SIZES[-1])
 
     def test_120_file_delete(self):
         file_path = 'test_120'
@@ -239,6 +207,27 @@ class TC_00_FileSystem(RegressionTestCase):
         self.do_truncate_test(255, 256)
         self.do_truncate_test(65537, 65535)
         self.do_truncate_test(65537, 65536)
+
+    def verify_seek_tell_truncate(self, file_out, file_size, file_pos, file_truncate):
+        stdout, _ = self.run_binary([
+            'seek_tell_truncate',
+            file_out,
+            str(file_size),
+            str(file_pos),
+            str(file_truncate)
+        ])
+
+        self.assertIn('Test passed', stdout)
+
+    def test_141_file_seek_tell_truncate(self):
+        file_path = os.path.join(self.OUTPUT_DIR, 'test_141')
+
+        self.verify_seek_tell_truncate(f"{file_path}a", 0, 0, 100)
+        self.verify_seek_tell_truncate(f"{file_path}b", 512, 512, 65536)
+        self.verify_seek_tell_truncate(f"{file_path}c", 512, 64, 65536)
+        self.verify_seek_tell_truncate(f"{file_path}d", 512, 512, 0)
+        self.verify_seek_tell_truncate(f"{file_path}e", 512, 256, 0)
+        # XXX: we do not support shrinking files to arbitrary sizes in protected files
 
     def verify_copy_content(self, input_path, output_path):
         self.assertTrue(filecmp.cmp(input_path, output_path, shallow=False))

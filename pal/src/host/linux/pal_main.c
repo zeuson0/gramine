@@ -14,6 +14,7 @@
 #include "cpu.h"
 #include "debug_map.h"
 #include "elf/elf.h"
+#include "etc_host_info.h"
 #include "init.h"
 #include "linux_utils.h"
 #include "pal.h"
@@ -116,8 +117,23 @@ noreturn static void print_usage_and_exit(const char* argv_0) {
                "\tFirst process: %s <path to libpal.so> init <application> args...\n"
                "\tChildren:      %s <path to libpal.so> child <parent_stream_fd> args...",
                self, self);
-    log_always("This is an internal interface. Use pal_loader to launch applications in Gramine.");
+    log_always("This is an internal interface. Use gramine-direct wrapper to launch applications "
+               "in Gramine.");
     _PalProcessExit(1);
+}
+
+static void get_host_etc_configs(void) {
+    if (!g_pal_public_state.extra_runtime_domain_names_conf)
+        return;
+
+    if (parse_resolv_conf(&g_pal_public_state.dns_host) < 0) {
+        INIT_FAIL("Unable to parse /etc/resolv.conf");
+    }
+
+    if (get_hosts_hostname(g_pal_public_state.dns_host.hostname,
+                           sizeof(g_pal_public_state.dns_host.hostname)) < 0) {
+        INIT_FAIL("Unable to get hostname");
+    }
 }
 
 #ifdef ASAN
@@ -151,7 +167,7 @@ noreturn void pal_linux_main(void* initial_rsp, void* fini_callback) {
 
     /* we don't yet have a TCB in the GS register, but GCC's stack protector will look for a canary
      * at gs:[0x8] in functions called below, so let's install a dummy TCB with a default canary */
-    PAL_TCB_LINUX dummy_tcb_for_stack_protector = { 0 };
+    PAL_LINUX_TCB dummy_tcb_for_stack_protector = { 0 };
     dummy_tcb_for_stack_protector.common.self = &dummy_tcb_for_stack_protector.common;
     pal_tcb_set_stack_canary(&dummy_tcb_for_stack_protector.common, STACK_PROTECTOR_CANARY_DEFAULT);
     ret = pal_set_tcb(&dummy_tcb_for_stack_protector.common);
@@ -291,8 +307,8 @@ noreturn void pal_linux_main(void* initial_rsp, void* fini_callback) {
     first_thread->thread.stack = alt_stack;
 
     // Initialize TCB at the top of the alternative stack.
-    PAL_TCB_LINUX* tcb = alt_stack + ALT_STACK_SIZE - sizeof(PAL_TCB_LINUX);
-    pal_tcb_linux_init(tcb, first_thread, alt_stack, /*callback=*/NULL, /*param=*/NULL);
+    PAL_LINUX_TCB* tcb = alt_stack + ALT_STACK_SIZE - sizeof(PAL_LINUX_TCB);
+    pal_linux_tcb_init(tcb, first_thread, alt_stack, /*callback=*/NULL, /*param=*/NULL);
     ret = pal_thread_init(tcb);
     if (ret < 0)
         INIT_FAIL("pal_thread_init() failed: %d", unix_to_pal_error(ret));
@@ -382,6 +398,11 @@ noreturn void pal_linux_main(void* initial_rsp, void* fini_callback) {
     } else {
         // Children receive their argv and config via IPC.
         int parent_stream_fd = atoi(argv[3]);
+        ret = DO_SYSCALL(fcntl, parent_stream_fd, F_SETFD, FD_CLOEXEC);
+        if (ret < 0) {
+            INIT_FAIL("Failed to set `CLOEXEC` flag on `parent_stream_fd`: %d",
+                      unix_to_pal_error(ret));
+        }
         init_child_process(parent_stream_fd, &parent, &manifest, &instance_id);
     }
     assert(manifest);
@@ -401,6 +422,19 @@ noreturn void pal_linux_main(void* initial_rsp, void* fini_callback) {
                              /*defaultval=*/g_page_size, &g_pal_internal_mem_size);
     if (ret < 0) {
         INIT_FAIL("Cannot parse 'loader.pal_internal_mem_size'");
+    }
+
+    ret = toml_bool_in(g_pal_public_state.manifest_root,
+                       "sys.enable_extra_runtime_domain_names_conf", /*defaultval=*/false,
+                       &g_pal_public_state.extra_runtime_domain_names_conf);
+    if (ret < 0) {
+        INIT_FAIL("Cannot parse 'sys.enable_extra_runtime_domain_names_conf'");
+    }
+
+    /* Get host /etc information only for the first process. This information will be
+     * checkpointed and restored during forking of the child process(es). */
+    if (first_process) {
+        get_host_etc_configs();
     }
 
     void* internal_mem_addr = (void*)DO_SYSCALL(mmap, NULL, g_pal_internal_mem_size,

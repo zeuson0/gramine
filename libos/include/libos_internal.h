@@ -9,7 +9,6 @@
 
 #include "api.h"
 #include "assert.h"
-#include "atomic.h"
 #include "libos_defs.h"
 #include "libos_internal_arch.h"
 #include "libos_tcb.h"
@@ -18,7 +17,7 @@
 #include "pal.h"
 #include "pal_error.h"
 
-noreturn void* libos_init(int argc, const char** argv, const char** envp);
+noreturn void libos_init(const char* const* argv, const char* const* envp);
 
 /* important macros and static inline functions */
 
@@ -154,41 +153,11 @@ bool handle_signal(PAL_CONTEXT* context);
  */
 long pal_to_unix_errno(long err);
 
+int set_hostname(const char* name, size_t len);
+
 void warn_unsupported_syscall(unsigned long sysno);
 void debug_print_syscall_before(unsigned long sysno, ...);
 void debug_print_syscall_after(unsigned long sysno, ...);
-
-/* reference counter APIs */
-#define REF_GET(ref)        __atomic_load_n(&(ref).counter, __ATOMIC_SEQ_CST)
-#define REF_SET(ref, count) __atomic_store_n(&(ref).counter, count, __ATOMIC_SEQ_CST);
-
-static inline int64_t __ref_inc(REFTYPE* ref) {
-    int64_t _c;
-    do {
-        _c = __atomic_load_n(&ref->counter, __ATOMIC_SEQ_CST);
-        assert(_c >= 0);
-    } while (!__atomic_compare_exchange_n(&ref->counter, &_c, _c + 1, /*weak=*/false,
-                                          __ATOMIC_SEQ_CST, __ATOMIC_RELAXED));
-    return _c + 1;
-}
-
-#define REF_INC(ref) __ref_inc(&(ref))
-
-static inline int64_t __ref_dec(REFTYPE* ref) {
-    int64_t _c;
-    do {
-        _c = __atomic_load_n(&ref->counter, __ATOMIC_SEQ_CST);
-        if (!_c) {
-            log_error("Fail: Trying to drop reference count below 0");
-            BUG();
-            return 0;
-        }
-    } while (!__atomic_compare_exchange_n(&ref->counter, &_c, _c - 1, /*weak=*/false,
-                                          __ATOMIC_SEQ_CST, __ATOMIC_RELAXED));
-    return _c - 1;
-}
-
-#define REF_DEC(ref) __ref_dec(&(ref))
 
 #ifndef __alloca
 #define __alloca __builtin_alloca
@@ -218,7 +187,7 @@ static inline bool memory_migrated(void* mem) {
 extern void* __load_address;
 extern void* __load_address_end;
 
-extern const char** migrated_envp;
+extern const char* const* migrated_envp; /* TODO: needs to be removed */
 
 int init_brk_region(void* brk_region, size_t data_segment_size);
 void reset_brk(void);
@@ -283,7 +252,8 @@ void delete_epoll_items_for_fd(int fd, struct libos_handle* handle);
 void maybe_epoll_et_trigger(struct libos_handle* handle, int ret, bool in, bool was_partial);
 
 void* allocate_stack(size_t size, size_t protect_size, bool user);
-int init_stack(const char** argv, const char** envp, const char*** out_argp, elf_auxv_t** out_auxv);
+int init_stack(const char* const* argv, const char* const* envp, char*** out_argp,
+               elf_auxv_t** out_auxv);
 
 /*!
  * \brief Jump to the defined entry point.

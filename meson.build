@@ -8,7 +8,7 @@ project(
     version: '1.2post-UNRELEASED',
     license: 'LGPLv3+',
 
-    meson_version: '>=0.55',
+    meson_version: '>=0.56',
 
     default_options: [
         'c_std=c11',
@@ -62,6 +62,7 @@ if host_machine.cpu_family() == 'x86_64'
         depfile: '@BASENAME@.dep',
         arguments: [
             '-f', 'elf64',
+            '-p', '@SOURCE_DIR@/common/src/arch/x86_64/no_exec_stack.nasm',
             '-I', '@0@/'.format(meson.current_build_dir()),
             '-MQ', '@OUTPUT@', '-MF', '@DEPFILE@',
             '@EXTRA_ARGS@',
@@ -96,7 +97,7 @@ endif
 if sgx
     conf_sgx = configuration_data()
 
-    # SGX driver options (in Make, this was ISGX_DRIVER_PATH and link-intel-driver.py)
+    # SGX driver options
     sgx_driver = get_option('sgx_driver')
     sgx_driver_include_path = get_option('sgx_driver_include_path')
     sgx_driver_device = get_option('sgx_driver_device')
@@ -252,12 +253,13 @@ tomlc99_src = tomlc99_proj.get_variable('tomlc99_src')
 
 uthash_dep = subproject('uthash-2.1.0').get_variable('uthash_dep')
 
-mbedtls_proj = subproject('mbedtls-mbedtls-2.26.0-2')
+mbedtls_proj = subproject('mbedtls-mbedtls-3.2.1')
 mbedtls_static_dep = mbedtls_proj.get_variable('mbedtls_static_dep')
 mbedtls_pal_dep = mbedtls_proj.get_variable('mbedtls_pal_dep')
 
 if sgx
     protoc_c_prog = find_program('protoc-c')
+    protoc_prog = find_program('protoc')
 
     threads_dep = dependency('threads')
 

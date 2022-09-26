@@ -28,11 +28,17 @@ typedef struct toml_table_t toml_table_t;
 
 typedef uint32_t    PAL_IDX; /*!< an index */
 
-/* maximum length of pipe/FIFO name (should be less than Linux sockaddr_un.sun_path = 108) */
-#define PIPE_NAME_MAX 96
-
 /* maximum length of URIs */
 #define URI_MAX 4096
+
+/* maximum length of hostname */
+#define PAL_HOSTNAME_MAX 255
+
+/* DNS limits, used in resolv.conf emulation */
+#define PAL_MAX_NAMESPACES 3
+#define PAL_MAX_DN_SEARCH  6
+
+#define MAX_IPV6_ADDR_LEN  40
 
 /* Common types used by host specific header. */
 enum pal_socket_domain {
@@ -53,14 +59,16 @@ typedef struct {
     struct handle_ops* ops;
 } PAL_HDR;
 
+/*
+ * This header provides `PAL_HANDLE` type definition.
+ * All host resources being part of `PAL_HANDLE` must be released when spawning another process
+ * (`PalProcessCreate`), e.g. Linux PAL must set `OCLOEXEC` flag on all open file descriptors.
+ * LibOS layer takes care of migrating all necessary handles using `PalSendHandle`.
+ */
 #include "pal_host.h"
 
-#define HANDLE_HDR(handle) (&((handle)->hdr))
-#define PAL_GET_TYPE(h) (HANDLE_HDR(h)->type)
-#define UNKNOWN_HANDLE(handle) (PAL_GET_TYPE(handle) >= PAL_HANDLE_TYPE_BOUND)
-
 static inline void init_handle_hdr(PAL_HANDLE handle, int pal_type) {
-    HANDLE_HDR(handle)->type = pal_type;
+    handle->hdr.type = pal_type;
 }
 
 #else /* IN_PAL */
@@ -91,6 +99,28 @@ enum {
 #define PAL_IDX_POISON         ((PAL_IDX)-1) /* PAL identifier poison value */
 
 /********** PAL APIs **********/
+
+struct pal_dns_host_conf_addr {
+    bool is_ipv6;
+    union {
+        uint32_t ipv4;
+        uint16_t ipv6[8];
+    };
+};
+
+/* Used in resolv.conf emulation */
+struct pal_dns_host_conf {
+    struct pal_dns_host_conf_addr nsaddr_list[PAL_MAX_NAMESPACES];
+    size_t nsaddr_list_count;
+
+    char dn_search[PAL_MAX_DN_SEARCH][PAL_HOSTNAME_MAX];
+    size_t dn_search_count;
+
+    bool inet6;
+    bool rotate;
+
+    char hostname[PAL_HOSTNAME_MAX];
+};
 
 /* Part of PAL state which is shared between all PALs and accessible (read-only) by the binary
  * started by PAL (usually our LibOS). */
@@ -138,6 +168,9 @@ struct pal_public_state {
 
     struct pal_cpu_info cpu_info;
     struct pal_topo_info topo_info; /* received from untrusted host, but sanitized */
+
+    bool extra_runtime_domain_names_conf;
+    struct pal_dns_host_conf dns_host;
 };
 
 /* We cannot mark this as returning a pointer to `const` object, because LibOS can
@@ -266,11 +299,10 @@ enum pal_create_mode {
 
 /*! stream misc flags */
 typedef uint32_t pal_stream_options_t; /* bitfield */
-#define PAL_OPTION_CLOEXEC         0x1
-#define PAL_OPTION_EFD_SEMAPHORE   0x2 /*!< specific to `eventfd` syscall */
-#define PAL_OPTION_NONBLOCK        0x4
-#define PAL_OPTION_PASSTHROUGH     0x8 /*!< Disregard `sgx.{allowed,trusted}_files` */
-#define PAL_OPTION_MASK            0xF
+#define PAL_OPTION_EFD_SEMAPHORE   0x1 /*!< specific to `eventfd` syscall */
+#define PAL_OPTION_NONBLOCK        0x2
+#define PAL_OPTION_PASSTHROUGH     0x4 /*!< Disregard `sgx.{allowed,trusted}_files` */
+#define PAL_OPTION_MASK            0x7
 
 /*!
  * \brief Open/create a stream resource specified by `uri`.
@@ -316,17 +348,13 @@ int PalStreamWaitForClient(PAL_HANDLE handle, PAL_HANDLE* client, pal_stream_opt
  * \param[in,out] count   Contains size of \p buffer. On success, will be set to the number of bytes
  *                        read.
  * \param         buffer  Pointer to the buffer to read into.
- * \param[out]    source  If \p handle is a UDP socket, \p size is not zero and \p source is not
- *                        NULL, the remote socket address is returned in it.
- * \param         size    Size of the \p source buffer.
  *
  * \returns 0 on success, negative error code on failure.
  *
  * If \p handle is a directory, PalStreamRead fills the buffer with the null-terminated names of the
  * directory entries.
  */
-int PalStreamRead(PAL_HANDLE handle, uint64_t offset, size_t* count, void* buffer, char* source,
-                  size_t size);
+int PalStreamRead(PAL_HANDLE handle, uint64_t offset, size_t* count, void* buffer);
 
 /*!
  * \brief Write data to an open stream.
@@ -337,12 +365,10 @@ int PalStreamRead(PAL_HANDLE handle, uint64_t offset, size_t* count, void* buffe
  * \param[in,out] count   Contains size of \p buffer. On success, will be set to the number of bytes
  *                        written.
  * \param         buffer  Pointer to the buffer to write from.
- * \param         dest    If the handle is a UDP socket, specifies the remote socket address.
  *
  * \returns 0 on success, negative error code on failure.
  */
-int PalStreamWrite(PAL_HANDLE handle, uint64_t offset, size_t* count, void* buffer,
-                   const char* dest);
+int PalStreamWrite(PAL_HANDLE handle, uint64_t offset, size_t* count, void* buffer);
 
 enum pal_delete_mode {
     PAL_DELETE_ALL,  /*!< delete the whole resource / shut down both directions */
@@ -461,11 +487,6 @@ int PalStreamAttributesQueryByHandle(PAL_HANDLE handle, PAL_STREAM_ATTR* attr);
 int PalStreamAttributesSetByHandle(PAL_HANDLE handle, PAL_STREAM_ATTR* attr);
 
 /*!
- * \brief Query the name of an open stream. On success `buffer` contains a null-terminated string.
- */
-int PalStreamGetName(PAL_HANDLE handle, char* buffer, size_t size);
-
-/*!
  * \brief This API changes the name of an open stream.
  */
 int PalStreamChangeName(PAL_HANDLE handle, const char* uri);
@@ -539,13 +560,16 @@ int PalSocketListen(PAL_HANDLE handle, unsigned int backlog);
  * \param[out] out_client       On success contains a handle for the new connection.
  * \param[out] out_client_addr  On success contains the remote address of the new connection.
  *                              Can be NULL, to ignore the result.
+ * \param[out] out_local_addr   On success contains the local address of the new connection.
+ *                              Can be NULL, to ignore the result.
  *
  * \returns 0 on success, negative error code on failure.
  *
  * This function can be safely called concurrently.
  */
 int PalSocketAccept(PAL_HANDLE handle, pal_stream_options_t options, PAL_HANDLE* out_client,
-                    struct pal_socket_addr* out_client_addr);
+                    struct pal_socket_addr* out_client_addr,
+                    struct pal_socket_addr* out_local_addr);
 
 /*!
  * \brief Connect a socket to a remote address.
@@ -565,18 +589,20 @@ int PalSocketConnect(PAL_HANDLE handle, struct pal_socket_addr* addr,
 /*!
  * \brief Send data.
  *
- * \param      handle    Handle to the socket.
- * \param      iov       Array of buffers with data to send.
- * \param      iov_len   Length of \p iov array.
- * \param[out] out_size  On success contains the number of bytes sent.
- * \param      addr      Destination address. Can be NULL if the socket was connected.
+ * \param      handle             Handle to the socket.
+ * \param      iov                Array of buffers with data to send.
+ * \param      iov_len            Length of \p iov array.
+ * \param[out] out_size           On success contains the number of bytes sent.
+ * \param      addr               Destination address. Can be NULL if the socket was connected.
+ * \param      force_nonblocking  If `true` this request should not block. Otherwise just use
+ *                                whatever mode the handle is in.
  *
  * \returns 0 on success, negative error code on failure.
  *
  * Data is sent atomically, i.e. data from two `PalSocketSend` calls will not be interleaved.
  */
 int PalSocketSend(PAL_HANDLE handle, struct pal_iovec* iov, size_t iov_len, size_t* out_size,
-                  struct pal_socket_addr* addr);
+                  struct pal_socket_addr* addr, bool force_nonblocking);
 
 /*!
  * \brief Receive data.
@@ -634,30 +660,28 @@ int PalThreadResume(PAL_HANDLE thread);
  * \brief Set the CPU affinity of a thread.
  *
  * \param thread        PAL thread for which to set the CPU affinity.
- * \param cpumask_size  Size in bytes of the bitmask pointed by \a cpu_mask.
  * \param cpu_mask      Pointer to the new CPU mask.
+ * \param cpu_mask_len  Length of the \p cpu_mask array.
  *
  * \returns 0 on success, negative error code on failure.
  *
- * All bit positions exceeding the count of host CPUs are ignored. Returns an error if no CPUs were
- * selected.
+ * All bit positions exceeding the count of host CPUs are ignored. \p cpu_mask should select at
+ * least one online CPU.
  */
-int PalThreadSetCpuAffinity(PAL_HANDLE thread, size_t cpumask_size, unsigned long* cpu_mask);
+int PalThreadSetCpuAffinity(PAL_HANDLE thread, unsigned long* cpu_mask, size_t cpu_mask_len);
 
 /*!
  * \brief Get the CPU affinity of a thread.
  *
  * \param thread        PAL thread for which to get the CPU affinity.
- * \param cpumask_size  Size in bytes of the bitmask pointed by \a cpu_mask.
  * \param cpu_mask      Pointer to hold the current CPU mask.
+ * \param cpu_mask_len  Length of the \p cpu_mask array.
  *
  * \returns 0 on success, negative error code on failure.
  *
- * This function assumes that \a cpumask_size is valid and greater than 0. Also, \a cpumask_size
- * must be able to fit all the processors in the host and must be aligned by sizeof(long). For
- * example, if the host supports 4 CPUs, \a cpumask_size should be 8 bytes.
+ * \p cpu_mask must be able to fit all the processors on the host.
  */
-int PalThreadGetCpuAffinity(PAL_HANDLE thread, size_t cpumask_size, unsigned long* cpu_mask);
+int PalThreadGetCpuAffinity(PAL_HANDLE thread, unsigned long* cpu_mask, size_t cpu_mask_len);
 
 /*
  * Exception Handling
@@ -785,8 +809,8 @@ void PalObjectClose(PAL_HANDLE object_handle);
 /*!
  * \brief Output a message to the debug stream.
  *
- * \param     buffer  Message to write.
- * \param[in] size    \p buffer size.
+ * \param buffer  Message to write.
+ * \param size    \p buffer size.
  *
  * \returns 0 on success, negative error code on failure.
  */
@@ -803,7 +827,7 @@ int PalSystemTimeQuery(uint64_t* time);
  * \brief Cryptographically secure RNG.
  *
  * \param[out] buffer  Output buffer.
- * \param[in]  size    \p buffer size.
+ * \param      size    \p buffer size.
  *
  * \returns 0 on success, negative on failure.
  */
@@ -842,7 +866,7 @@ size_t PalMemoryAvailableQuota(void);
 /*!
  * \brief Obtain the attestation report (local) with `user_report_data` embedded into it.
  *
- * \param[in]     user_report_data       Report data with arbitrary contents (typically uniquely
+ * \param         user_report_data       Report data with arbitrary contents (typically uniquely
  *                                       identifies this Gramine instance). Must be a 64B buffer
  *                                       in case of SGX PAL.
  * \param[in,out] user_report_data_size  Caller specifies size of `user_report_data`; on return,
@@ -876,10 +900,10 @@ int PalAttestationReport(const void* user_report_data, size_t* user_report_data_
 /*!
  * \brief Obtain the attestation quote with `user_report_data` embedded into it.
  *
- * \param[in]     user_report_data       Report data with arbitrary contents (typically uniquely
+ * \param         user_report_data       Report data with arbitrary contents (typically uniquely
  *                                       identifies this Gramine instance). Must be a 64B buffer
  *                                       in case of SGX PAL.
- * \param[in]     user_report_data_size  Size in bytes of `user_report_data`. Must be exactly 64B
+ * \param         user_report_data_size  Size in bytes of `user_report_data`. Must be exactly 64B
  *                                       in case of SGX PAL.
  * \param[out]    quote                  Attestation quote with `user_report_data` embedded.
  * \param[in,out] quote_size             Caller specifies maximum size allocated for `quote`; on
@@ -893,7 +917,7 @@ int PalAttestationQuote(const void* user_report_data, size_t user_report_data_si
 /*!
  * \brief Get special key (specific to PAL host).
  *
- * \param[in]     name      Key name.
+ * \param         name      Key name.
  * \param[out]    key       On success, will be set to retrieved key.
  * \param[in,out] key_size  Caller specifies maximum size for `key`. On success, will contain actual
  *                          size.

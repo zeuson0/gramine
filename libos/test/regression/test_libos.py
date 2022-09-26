@@ -2,6 +2,7 @@ import os
 import re
 import shutil
 import signal
+import socket
 import subprocess
 import unittest
 
@@ -11,6 +12,13 @@ from graminelibos.regression import (
     USES_MUSL,
     RegressionTestCase,
 )
+
+CPUINFO_TEST_FLAGS = [
+    'fpu', 'msr', 'apic', 'xsave', 'xsaveopt', 'avx', 'sse', 'sse2',
+    'avx512cd', 'sgx_lc', 'amx_tile', 'avx_vnni', 'mwaitx', 'rdtscp',
+    'syscall',
+]
+
 
 class TC_00_Unittests(RegressionTestCase):
     def test_000_spinlock(self):
@@ -163,6 +171,13 @@ class TC_01_Bootstrap(RegressionTestCase):
         self.assertIn('User Program Started', stdout)
         self.assertIn('Exception \'test runtime error\' caught', stdout)
 
+    def test_111_argv_from_manifest(self):
+        expected_argv = ['bootstrap', 'THIS', 'SHOULD GO', 'TO', 'THE', 'APP ']
+        stdout, _ = self.run_binary(['argv_from_manifest'])
+        self.assertIn(f'# of arguments: {len(expected_argv)}\n', stdout)
+        for i, arg in enumerate(expected_argv):
+            self.assertIn(f'argv[{i}] = {arg}\n', stdout)
+
     def test_200_exec(self):
         stdout, _ = self.run_binary(['exec'])
 
@@ -214,13 +229,23 @@ class TC_01_Bootstrap(RegressionTestCase):
         self.assertIn('execve(invalid-argv) correctly returned error', stdout)
         self.assertIn('execve(invalid-envp) correctly returned error', stdout)
 
-    @unittest.skipIf(USES_MUSL, 'Test uses /bin/sh from the host which is built against Glibc')
+    @unittest.skipIf(USES_MUSL,
+        'Test uses /bin/sh from the host which is usually built against glibc')
     def test_211_exec_script(self):
         stdout, _ = self.run_binary(['exec_script'])
         self.assertIn('Printing Args: '
             'scripts/baz.sh ECHO FOXTROT GOLF scripts/bar.sh '
             'ALPHA BRAVO CHARLIE DELTA '
             'scripts/foo.sh STRING FROM EXECVE', stdout)
+
+    @unittest.skipIf(USES_MUSL,
+        'Test uses /bin/sh from the host which is usually built against glibc')
+    def test_212_shebang_test_script(self):
+        stdout, _ = self.run_binary(['shebang_test_script'])
+        self.assertRegex(stdout, r'Printing Args: '
+            r'scripts/baz\.sh ECHO FOXTROT GOLF scripts/bar\.sh '
+            r'ALPHA BRAVO CHARLIE DELTA '
+            r'/?scripts/foo\.sh')
 
     def test_220_send_handle(self):
         path = 'tmp/send_handle_test'
@@ -371,6 +396,18 @@ class TC_01_Bootstrap(RegressionTestCase):
         self.assertIn('Host:', log)
         self.assertIn('LibOS initialized', log)
         self.assertIn('--- exit_group', log)
+
+    def test_702_debug_log_inline_unexpected_arg(self):
+        try:
+            # `debug_log_inline` program logic is irrelevant here, we only want to test Gramine's
+            # handling of unexpected args when the manifest has no explicit argv handling options
+            self.run_binary(['debug_log_inline', 'unexpected arg'])
+            self.fail('expected to return nonzero')
+        except subprocess.CalledProcessError as e:
+            self.assertEqual(e.returncode, 1)
+            stderr = e.stderr.decode()
+            self.assertIn('argv handling wasn\'t configured in the manifest, but cmdline arguments '
+                          'were specified', stderr)
 
 
 class TC_02_OpenMP(RegressionTestCase):
@@ -876,6 +913,15 @@ class TC_30_Syscall(RegressionTestCase):
                 os.remove('tmp/lock_file')
         self.assertIn('TEST OK', stdout)
 
+    def test_120_gethostname_default(self):
+        # The generic manifest (manifest.template) doesn't use extra runtime conf.
+        stdout, _ = self.run_binary(['hostname', 'localhost'])
+        self.assertIn("TEST OK", stdout)
+
+    def test_121_gethostname_pass_etc(self):
+        stdout, _ = self.run_binary(['hostname_extra_runtime_conf', socket.gethostname()])
+        self.assertIn("TEST OK", stdout)
+
 class TC_31_Syscall(RegressionTestCase):
     def test_000_syscall_redirect(self):
         stdout, _ = self.run_binary(['syscall'])
@@ -905,6 +951,8 @@ class TC_40_FileSystem(RegressionTestCase):
         self.assertIn('/proc/2/exe: link: /proc_common', lines)
         self.assertIn('/proc/2/root: link: /', lines)
         self.assertIn('/proc/2/maps: file', lines)
+        self.assertIn('/proc/2/cmdline: file', lines)
+        self.assertIn('/proc/2/status: file', lines)
 
         # /proc/[pid]/fd
         self.assertIn('/proc/2/fd/0: link: /dev/tty', lines)
@@ -959,7 +1007,17 @@ class TC_40_FileSystem(RegressionTestCase):
         self.assertIn('TEST OK', stdout)
 
     def test_020_cpuinfo(self):
-        stdout, _ = self.run_binary(['proc_cpuinfo'])
+        with open('/proc/cpuinfo') as file_:
+            cpuinfo = file_.read().strip().split('\n\n')[-1]
+        cpuinfo = dict(map(str.strip, line.split(':'))
+            for line in cpuinfo.split('\n'))
+        if 'flags' in cpuinfo:
+            cpuinfo['flags'] = ' '.join(flag for flag in cpuinfo['flags'].split()
+                if flag in CPUINFO_TEST_FLAGS)
+        else:
+            cpuinfo['flags'] = ''
+
+        stdout, _ = self.run_binary(['proc_cpuinfo', cpuinfo['flags']])
 
         # proc/cpuinfo Linux-based formatting
         self.assertIn('cpuinfo test passed', stdout)
@@ -971,8 +1029,11 @@ class TC_40_FileSystem(RegressionTestCase):
         self.assertIn('/proc/stat test passed', stdout)
 
     def test_030_fdleak(self):
-        stdout, _ = self.run_binary(['fdleak'], timeout=10)
-        self.assertIn("Test succeeded.", stdout)
+        # The fd limit is rather arbitrary, but must be in sync with numbers from the test.
+        # Currently test opens 10 fds simultaneously, so 50 is a safe margin for any fds that
+        # Gramine might open internally.
+        stdout, _ = self.run_binary(['fdleak'], timeout=40, open_fds_limit=50)
+        self.assertIn("TEST OK", stdout)
 
     def get_cache_levels_cnt(self):
         cpu0 = '/sys/devices/system/cpu/cpu0/'
@@ -1103,7 +1164,7 @@ class TC_50_GDB(RegressionTestCase):
         stdout, _ = self.run_gdb(['debug'], 'debug.gdb')
 
         backtrace_1 = self.find('backtrace 1', stdout)
-        self.assertIn(f' main ()', backtrace_1)
+        self.assertIn(' main ()', backtrace_1)
         self.assertIn(' _start ()', backtrace_1)
         self.assertIn('debug.c', backtrace_1)
         if not USES_MUSL:

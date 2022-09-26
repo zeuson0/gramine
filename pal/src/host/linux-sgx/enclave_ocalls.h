@@ -57,7 +57,8 @@ int ocall_listen_simple(int fd, unsigned int backlog);
 int ocall_listen(int domain, int type, int protocol, int ipv6_v6only, struct sockaddr* addr,
                  size_t* addrlen);
 
-int ocall_accept(int sockfd, struct sockaddr* addr, size_t* addrlen, int options);
+int ocall_accept(int sockfd, struct sockaddr* addr, size_t* addrlen, struct sockaddr* local_addr,
+                 size_t* local_addrlen, int options);
 
 int ocall_connect(int domain, int type, int protocol, int ipv6_v6only, const struct sockaddr* addr,
                   size_t addrlen, struct sockaddr* bind_addr, size_t* bind_addrlen);
@@ -68,7 +69,7 @@ ssize_t ocall_recv(int sockfd, struct iovec* buf, size_t iov_len, void* addr, si
                    void* control, size_t* controllenptr, unsigned int flags);
 
 ssize_t ocall_send(int sockfd, const struct iovec* iov, size_t iov_len, const void* addr,
-                   size_t addrlen, void* control, size_t controllen);
+                   size_t addrlen, void* control, size_t controllen, unsigned int flags);
 
 int ocall_setsockopt(int sockfd, int level, int optname, const void* optval, size_t optlen);
 
@@ -76,9 +77,9 @@ int ocall_shutdown(int sockfd, int how);
 
 int ocall_resume_thread(void* tcs);
 
-int ocall_sched_setaffinity(void* tcs, size_t cpumask_size, void* cpu_mask);
+int ocall_sched_setaffinity(void* tcs, unsigned long* cpu_mask, size_t cpu_mask_len);
 
-int ocall_sched_getaffinity(void* tcs, size_t cpumask_size, void* cpu_mask);
+int ocall_sched_getaffinity(void* tcs, unsigned long* cpu_mask, size_t cpu_mask_len);
 
 int ocall_clone_thread(void);
 
@@ -107,18 +108,19 @@ int ocall_eventfd(int flags);
 /*!
  * \brief Execute untrusted code in PAL to obtain a quote from the Quoting Enclave.
  *
- * The obtained quote is not validated in any way (i.e., this function does not check whether the
- * returned quote corresponds to this enclave or whether its contents make sense).
- *
- * \param[in]  spid       Software provider ID (SPID); if NULL then DCAP/ECDSA is used.
- * \param[in]  linkable   Quote type (linkable vs unlinkable); ignored if DCAP/ECDSA is used.
- * \param[in]  report     Enclave report to be sent to the Quoting Enclave.
- * \param[in]  nonce      16B nonce to be included in the quote for freshness; ignored if
+ * \param      spid       Software provider ID (SPID); if NULL then DCAP/ECDSA is used.
+ * \param      linkable   Quote type (linkable vs unlinkable); ignored if DCAP/ECDSA is used.
+ * \param      report     Enclave report to be sent to the Quoting Enclave.
+ * \param      nonce      16B nonce to be included in the quote for freshness; ignored if
  *                        DCAP/ECDSA is used.
  * \param[out] quote      Quote returned by the Quoting Enclave (allocated via malloc() in this
  *                        function; the caller gets the ownership of the quote).
  * \param[out] quote_len  Length of the quote returned by the Quoting Enclave.
- * \return                0 on success, negative Linux error code otherwise.
+ *
+ * \returns 0 on success, negative Linux error code otherwise.
+ *
+ * The obtained quote is not validated in any way (i.e., this function does not check whether the
+ * returned quote corresponds to this enclave or whether its contents make sense).
  */
 int ocall_get_quote(const sgx_spid_t* spid, bool linkable, const sgx_report_t* report,
                     const sgx_quote_nonce_t* nonce, char** quote, size_t* quote_len);

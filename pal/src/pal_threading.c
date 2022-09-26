@@ -28,17 +28,18 @@ noreturn void PalThreadExit(int* clear_child_tid) {
 
 /* PAL call PalThreadResume: resume the execution of a thread which is delayed before */
 int PalThreadResume(PAL_HANDLE thread_handle) {
-    if (!thread_handle || HANDLE_HDR(thread_handle)->type != PAL_TYPE_THREAD) {
+    if (!thread_handle || thread_handle->hdr.type != PAL_TYPE_THREAD) {
         return -PAL_ERROR_INVAL;
     }
 
     return _PalThreadResume(thread_handle);
 }
 
-int PalThreadSetCpuAffinity(PAL_HANDLE thread, size_t cpumask_size, unsigned long* cpu_mask) {
-    return _PalThreadSetCpuAffinity(thread, cpumask_size, cpu_mask);
+int PalThreadSetCpuAffinity(PAL_HANDLE thread, unsigned long* cpu_mask, size_t cpu_mask_len) {
+    return _PalThreadSetCpuAffinity(thread, cpu_mask, cpu_mask_len);
 }
 
-int PalThreadGetCpuAffinity(PAL_HANDLE thread, size_t cpumask_size, unsigned long* cpu_mask) {
-    return _PalThreadGetCpuAffinity(thread, cpumask_size, cpu_mask);
+int PalThreadGetCpuAffinity(PAL_HANDLE thread, unsigned long* cpu_mask, size_t cpu_mask_len) {
+    memset(cpu_mask, 0, cpu_mask_len * sizeof(*cpu_mask));
+    return _PalThreadGetCpuAffinity(thread, cpu_mask, cpu_mask_len);
 }

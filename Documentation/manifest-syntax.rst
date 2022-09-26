@@ -110,18 +110,13 @@ Command-line arguments
 
 ::
 
-   loader.argv0_override = "[STRING]"
+   loader.insecure__use_cmdline_argv = true
 
-This syntax specifies an arbitrary string (typically the executable name) that
-will be passed as the first argument (``argv[0]``) to the executable.
-
-If the string is not specified in the manifest, the application will get
-``argv[0]`` from :program:`gramine-direct` or :program:`gramine-sgx`
-invocation.
+or
 
 ::
 
-   loader.insecure__use_cmdline_argv = true
+   loader.argv = ["arg0", "arg1", "arg2", ...]
 
 or
 
@@ -129,20 +124,62 @@ or
 
    loader.argv_src_file = "file:file_with_serialized_argv"
 
-If you want your application to use commandline arguments you need to either set
-``loader.insecure__use_cmdline_argv`` (insecure in almost all cases) or point
-``loader.argv_src_file`` to a file containing output of
-:ref:`gramine-argv-serializer<gramine-argv-serializer>`.
+If you want your application to use commandline arguments, you must choose one
+of the three mutually exclusive options:
+
+- set ``loader.insecure__use_cmdline_argv`` (insecure in almost all cases),
+- put commandline arguments into ``loader.argv`` array,
+- point ``loader.argv_src_file`` to a file
+  containing output of :ref:`gramine-argv-serializer<gramine-argv-serializer>`.
+
+If none of the above arguments-handling manifest options is specified in the
+manifest, the application will get ``argv = [ <libos.entrypoint value> ]``.
 
 ``loader.argv_src_file`` is intended to point to either a trusted file or an
-encrypted file. The former allows to securely hardcode arguments (current
-manifest syntax doesn't allow to include them inline), the latter allows the
-arguments to be provided at runtime from an external (trusted) source.
+encrypted file. The former allows to securely hardcode arguments, the latter
+allows the arguments to be provided at runtime from an external (trusted)
+source.
 
 .. note ::
    Pointing to an encrypted file is currently not supported, due to the fact
    that encryption key provisioning currently happens after setting up
    arguments.
+
+Domain names configuration
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+::
+
+    sys.enable_extra_runtime_domain_names_conf = [true|false]
+    (Default: false)
+
+This option will generate the following extra configuration:
+
+- Hostname (obtained by apps via `nodename` field in `uname` syscall),
+  set to the host's hostname at initialization.
+- Pseudo-file ``/etc/resolv.conf``, with keywords:
+
+   - ``nameserver``
+   - ``search``
+   - ``options`` (``inet6`` | ``rotate``)
+
+  Unsupported keywords and malformed lines from ``/etc/resolv.conf`` are ignored.
+
+The functionality is achieved by taking the host's configuration via various
+APIs and reading the host's configuration files. In the case of Linux PAL,
+most information comes from the host's ``/etc``. The gathered information is
+used to create ``/etc`` files inside Gramine's file system, or change Gramine
+process configuration. For security-enforcing modes (such as SGX), Gramine
+additionally sanitizes the information gathered from the host. Invalid host's
+configuration is reported as an error (e.g. invalid hostname, or invalid IPv4
+address in ``nameserver`` keyword).
+
+Note that Gramine supports only a subset of the configuration.
+Refer to the list of supported keywords.
+
+This option takes precedence over ``fs.mounts``.
+This means that etc files provided via ``fs.mounts`` will be overridden with
+the ones added via this option.
 
 Environment variables
 ^^^^^^^^^^^^^^^^^^^^^
@@ -510,7 +547,7 @@ Number of RPC threads (Exitless feature)
 
 ::
 
-    sgx.rpc_thread_num = [NUM]
+    sgx.insecure__rpc_thread_num = [NUM]
     (Default: 0)
 
 This syntax specifies the number of RPC threads that are created outside of
@@ -523,7 +560,7 @@ the enclave (except for a few syscalls where there is no benefit, e.g.,
 If user specifies ``0`` or omits this directive, then no RPC threads are
 created and all system calls perform an enclave exit ("normal" execution).
 
-Note that the number of created RPC threads must match the maximum number of
+Note that the number of created RPC threads should match the maximum number of
 simultaneous enclave threads. If there are more RPC threads, then CPU time is
 wasted. If there are less RPC threads, some enclave threads may starve,
 especially if there are many blocking system calls by other enclave threads.
@@ -533,6 +570,9 @@ OCALLs/ECALLs for fast shared-memory communication at the cost of occupying
 more CPU cores and burning more CPU cycles. For example, a single-threaded
 Redis instance on Linux becomes 5-threaded on Gramine with Exitless. Thus,
 Exitless may negatively impact throughput but may improve latency.
+
+This feature is currently marked as insecure, because it reads untrusted memory
+in potentially insecure manner - susceptible to CVE-2022-21233 (INTEL-SA-00657).
 
 Optional CPU features (AVX, AVX512, MPX, PKRU, AMX)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

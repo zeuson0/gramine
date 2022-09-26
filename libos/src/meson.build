@@ -19,6 +19,7 @@ libos_sources = files(
     'fs/chroot/fs.c',
     'fs/dev/attestation.c',
     'fs/dev/fs.c',
+    'fs/etc/fs.c',
     'fs/eventfd/fs.c',
     'fs/libos_dcache.c',
     'fs/libos_fs.c',
@@ -42,6 +43,7 @@ libos_sources = files(
     'fs/sys/fs.c',
     'fs/sys/node_info.c',
     'fs/tmpfs/fs.c',
+    'gramine_hash.c',
     'ipc/libos_ipc.c',
     'ipc/libos_ipc_child.c',
     'ipc/libos_ipc_fs_lock.c',
@@ -128,18 +130,11 @@ vdso_data_o = custom_target('vdso_data.o',
     depends: vdso_so,
 )
 
-gramine_hash_src = vcs_tag(
-    command: ['git', 'rev-parse', '--verify', 'HEAD' ],
-    input: 'gramine_hash.c.in',
-    output: 'gramine_hash.c',
-    replace_string: '@GRAMINE_COMMIT_HASH@',
-)
-
 libos = shared_library('sysdb',
     libos_sources,
     vdso_data_o,
     libos_asm_offsets_h,
-    gramine_hash_src,
+    gramine_hash_header,
 
     c_args: [
         cflags_libos,

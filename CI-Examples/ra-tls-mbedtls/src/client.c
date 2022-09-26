@@ -1,27 +1,16 @@
-/*
- *  SSL client demonstration program (with RA-TLS).
- *  This program is heavily based on an mbedTLS 2.26.0 example ssl_client1.c
- *  but uses RA-TLS flows (SGX Remote Attestation flows) if RA-TLS library
- *  is required by user.
- *
- *  Copyright (C) 2006-2015, ARM Limited, All Rights Reserved
- *                2020, Intel Labs
- *  SPDX-License-Identifier: Apache-2.0
- *
- *  Licensed under the Apache License, Version 2.0 (the "License"); you may
- *  not use this file except in compliance with the License.
- *  You may obtain a copy of the License at
- *
- *  http://www.apache.org/licenses/LICENSE-2.0
- *
- *  Unless required by applicable law or agreed to in writing, software
- *  distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
- *  WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- *  See the License for the specific language governing permissions and
- *  limitations under the License.
+/* SPDX-License-Identifier: Apache-2.0 */
+/* Copyright (C) 2006-2015, ARM Limited, All Rights Reserved
+ *               2020, Intel Labs
  */
 
-#include "mbedtls/config.h"
+/*
+ * SSL client demonstration program (with RA-TLS).
+ * This program is originally based on an mbedTLS example ssl_client1.c but uses RA-TLS flows (SGX
+ * Remote Attestation flows) if RA-TLS library is required by user.
+ * Note that this program builds against mbedTLS 3.x.
+ */
+
+#include "mbedtls/build_info.h"
 
 #include <assert.h>
 #include <ctype.h>
@@ -45,8 +34,8 @@
 #include "mbedtls/net_sockets.h"
 #include "mbedtls/ssl.h"
 
-/* RA-TLS: on client, only need to register ra_tls_verify_callback() for cert verification */
-int (*ra_tls_verify_callback_f)(void* data, mbedtls_x509_crt* crt, int depth, uint32_t* flags);
+/* RA-TLS: on client, only need to register ra_tls_verify_callback_der() for cert verification */
+int (*ra_tls_verify_callback_der_f)(uint8_t* der_crt, size_t der_crt_size);
 
 /* RA-TLS: if specified in command-line options, use our own callback to verify SGX measurements */
 void (*ra_tls_set_measurement_callback_f)(int (*f_cb)(const char* mrenclave, const char* mrsigner,
@@ -115,6 +104,23 @@ static int my_verify_measurements(const char* mrenclave, const char* mrsigner,
     return 0;
 }
 
+/* RA-TLS: mbedTLS-specific callback to verify the x509 certificate */
+static int my_verify_callback(void* data, mbedtls_x509_crt* crt, int depth, uint32_t* flags) {
+    (void)data;
+
+    if (depth != 0) {
+        /* the cert chain in RA-TLS consists of single self-signed cert, so we expect depth 0 */
+        return MBEDTLS_ERR_X509_INVALID_FORMAT;
+    }
+    if (flags) {
+        /* mbedTLS sets flags to signal that the cert is not to be trusted (e.g., it is not
+         * correctly signed by a trusted CA; since RA-TLS uses self-signed certs, we don't care
+         * what mbedTLS thinks and ignore internal cert verification logic of mbedTLS */
+        *flags = 0;
+    }
+    return ra_tls_verify_callback_der_f(crt->raw.p, crt->raw.len);
+}
+
 static bool getenv_client_inside_sgx() {
     char* str = getenv("RA_TLS_CLIENT_INSIDE_SGX");
     if (!str)
@@ -135,7 +141,7 @@ int main(int argc, char** argv) {
 
     char* error;
     void* ra_tls_verify_lib           = NULL;
-    ra_tls_verify_callback_f          = NULL;
+    ra_tls_verify_callback_der_f      = NULL;
     ra_tls_set_measurement_callback_f = NULL;
 
     mbedtls_entropy_context entropy;
@@ -203,7 +209,7 @@ int main(int argc, char** argv) {
     }
 
     if (ra_tls_verify_lib) {
-        ra_tls_verify_callback_f = dlsym(ra_tls_verify_lib, "ra_tls_verify_callback");
+        ra_tls_verify_callback_der_f = dlsym(ra_tls_verify_lib, "ra_tls_verify_callback_der");
         if ((error = dlerror()) != NULL) {
             mbedtls_printf("%s\n", error);
             return 1;
@@ -335,7 +341,7 @@ int main(int argc, char** argv) {
     if (ra_tls_verify_lib) {
         /* use RA-TLS verification callback; this will overwrite CA chain set up above */
         mbedtls_printf("  . Installing RA-TLS callback ...");
-        mbedtls_ssl_conf_verify(&conf, ra_tls_verify_callback_f, NULL);
+        mbedtls_ssl_conf_verify(&conf, &my_verify_callback, NULL);
         mbedtls_printf(" ok\n");
     }
 

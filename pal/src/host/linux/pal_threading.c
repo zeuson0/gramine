@@ -78,7 +78,7 @@ out:
  * and this function modifies the stack protector's GS register, we disable stack protector here. */
 __attribute_no_stack_protector
 int pal_thread_init(void* tcbptr) {
-    PAL_TCB_LINUX* tcb = tcbptr;
+    PAL_LINUX_TCB* tcb = tcbptr;
     int ret;
 
     /* we inherited the parent's GS register which we shouldn't use in the child thread, but GCC's
@@ -135,9 +135,9 @@ int _PalThreadCreate(PAL_HANDLE* handle, int (*callback)(void*), void* param) {
      *       stack +--> +-------------------+
      *                  |  child stack      | THREAD_STACK_SIZE
      * child_stack +--> +-------------------+
-     *                  |  alternate stack  | ALT_STACK_SIZE - sizeof(PAL_TCB_LINUX)
+     *                  |  alternate stack  | ALT_STACK_SIZE - sizeof(PAL_LINUX_TCB)
      *         tcb +--> +-------------------+
-     *                  |  PAL TCB          | sizeof(PAL_TCB_LINUX)
+     *                  |  PAL TCB          | sizeof(PAL_LINUX_TCB)
      *                  +-------------------+
      *
      * We zero out only the first page of the main stack (to comply with the requirement of
@@ -156,8 +156,8 @@ int _PalThreadCreate(PAL_HANDLE* handle, int (*callback)(void*), void* param) {
     init_handle_hdr(hdl, PAL_TYPE_THREAD);
 
     // Initialize TCB at the top of the alternative stack.
-    PAL_TCB_LINUX* tcb = child_stack + ALT_STACK_SIZE - sizeof(PAL_TCB_LINUX);
-    pal_tcb_linux_init(tcb, hdl, child_stack, callback, param);
+    PAL_LINUX_TCB* tcb = child_stack + ALT_STACK_SIZE - sizeof(PAL_LINUX_TCB);
+    pal_linux_tcb_init(tcb, hdl, child_stack, callback, param);
 
     /* align child_stack to 16 */
     child_stack = ALIGN_DOWN_PTR(child_stack, 16);
@@ -191,7 +191,7 @@ void _PalThreadYieldExecution(void) {
 /* _PalThreadExit for internal use: Thread exiting */
 __attribute_no_sanitize_address
 noreturn void _PalThreadExit(int* clear_child_tid) {
-    PAL_TCB_LINUX* tcb = get_tcb_linux();
+    PAL_LINUX_TCB* tcb = pal_get_linux_tcb();
     PAL_HANDLE handle = tcb->handle;
     assert(handle);
 
@@ -249,16 +249,23 @@ int _PalThreadResume(PAL_HANDLE thread_handle) {
     return 0;
 }
 
-int _PalThreadSetCpuAffinity(PAL_HANDLE thread, size_t cpumask_size, unsigned long* cpu_mask) {
-    int ret = DO_SYSCALL(sched_setaffinity, thread->thread.tid, cpumask_size, cpu_mask);
-
-    return ret < 0 ? unix_to_pal_error(ret) : ret;
+int _PalThreadSetCpuAffinity(PAL_HANDLE thread, unsigned long* cpu_mask, size_t cpu_mask_len) {
+    int ret = DO_SYSCALL(sched_setaffinity, thread->thread.tid, cpu_mask_len * sizeof(*cpu_mask),
+                         cpu_mask);
+    return ret < 0 ? unix_to_pal_error(ret) : 0;
 }
 
-int _PalThreadGetCpuAffinity(PAL_HANDLE thread, size_t cpumask_size, unsigned long* cpu_mask) {
-    int ret = DO_SYSCALL(sched_getaffinity, thread->thread.tid, cpumask_size, cpu_mask);
+int _PalThreadGetCpuAffinity(PAL_HANDLE thread, unsigned long* cpu_mask, size_t cpu_mask_len) {
+    int ret = DO_SYSCALL(sched_getaffinity, thread->thread.tid, cpu_mask_len * sizeof(*cpu_mask),
+                         cpu_mask);
+    if (ret < 0) {
+        return unix_to_pal_error(ret);
+    }
+    if (ret % sizeof(*cpu_mask)) {
+        return -PAL_ERROR_INVAL;
+    }
 
-    return ret < 0 ? unix_to_pal_error(ret) : ret;
+    return 0;
 }
 
 struct handle_ops g_thread_ops = {

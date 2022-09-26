@@ -26,6 +26,7 @@
 #include "libos_handle.h"
 #include "libos_internal.h"
 #include "libos_pollable_event.h"
+#include "libos_refcount.h"
 #include "libos_signal.h"
 #include "libos_table.h"
 #include "libos_thread.h"
@@ -79,7 +80,7 @@ struct libos_epoll_item {
     /* `events` and `data` are guarded by `epoll_handle->info.epoll.lock`. */
     uint32_t events;
     uint64_t data;
-    REFTYPE ref_count;
+    refcount_t ref_count;
 };
 
 DEFINE_LIST(libos_epoll_waiter);
@@ -91,11 +92,11 @@ struct libos_epoll_waiter {
 };
 
 static void get_epoll_item(struct libos_epoll_item* item) {
-    REF_INC(item->ref_count);
+    refcount_inc(&item->ref_count);
 }
 
 static void put_epoll_item(struct libos_epoll_item* item) {
-    int64_t ref_count = REF_DEC(item->ref_count);
+    refcount_t ref_count = refcount_dec(&item->ref_count);
 
     if (!ref_count) {
         put_handle(item->epoll_handle);
@@ -226,7 +227,7 @@ static void _unlink_epoll_item(struct libos_epoll_item* item) {
 }
 
 void delete_epoll_items_for_fd(int fd, struct libos_handle* handle) {
-    /* This looks scarry, but in practice shouldn't be that bad - `fd` is rarely registered on
+    /* This looks scary, but in practice shouldn't be that bad - `fd` is rarely registered on
      * multiple epolls and even if it is, there shouldn't be many of them. */
     while (1) {
         struct libos_epoll_item* to_unlink = NULL;
@@ -324,7 +325,7 @@ static int do_epoll_add(struct libos_handle* epoll_handle, struct libos_handle* 
     get_handle(epoll_handle);
     new_item->data = event->data;
     new_item->events = event->events & ~EPOLL_NEEDS_REARM;
-    REF_SET(new_item->ref_count, 1);
+    refcount_set(&new_item->ref_count, 1);
 
     if (!(handle->acc_mode & MAY_READ)) {
         new_item->events &= ~(EPOLLIN | EPOLLRDNORM);
@@ -518,10 +519,19 @@ static int do_epoll_wait(int epfd, struct epoll_event* events, int maxevents, in
 
     int ret;
     struct libos_epoll_handle* epoll = &epoll_handle->info.epoll;
-    struct libos_epoll_item** items = NULL;
-    PAL_HANDLE* pal_handles = NULL;
-    pal_wait_flags_t* pal_events = NULL;
     size_t arrays_len = 0;
+    struct libos_epoll_item** items = NULL;
+    /* Reserve one slot for the waiter's wakeup handle. */
+    PAL_HANDLE* pal_handles = malloc(1 * sizeof(*pal_handles));
+    /* Double the amount of PAL events - one part are input events, the other - output. */
+    pal_wait_flags_t* pal_events = malloc(2 * sizeof(*pal_events));
+
+    if (!pal_handles || !pal_events) {
+        free(pal_handles);
+        free(pal_events);
+        put_handle(epoll_handle);
+        return -ENOMEM;
+    }
 
     lock(&epoll->lock);
 
@@ -774,7 +784,7 @@ BEGIN_CP_FUNC(epoll_items_list) {
         new_item->fd = item->fd;
         new_item->events = item->events;
         new_item->data = item->data;
-        REF_SET(new_item->ref_count, 0);
+        refcount_set(&new_item->ref_count, 0);
 
         LISTP_ADD(new_item, &new_handle->info.epoll.items, epoll_list);
         new_handle->info.epoll.items_count++;

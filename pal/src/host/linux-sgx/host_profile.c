@@ -23,7 +23,7 @@
 #include "host_internal.h"
 #include "host_log.h"
 #include "linux_utils.h"
-#include "pal_tls.h"
+#include "pal_tcb.h"
 #include "spinlock.h"
 
 #ifdef SGX_VTUNE_PROFILE
@@ -112,7 +112,7 @@ int sgx_profile_init(void) {
     g_profile_period = NSEC_IN_SEC / g_pal_enclave.profile_frequency;
     g_profile_mode = g_pal_enclave.profile_mode;
 
-    ret = DO_SYSCALL(open, "/proc/self/mem", O_RDONLY | O_LARGEFILE, 0);
+    ret = DO_SYSCALL(open, "/proc/self/mem", O_RDONLY | O_LARGEFILE | O_CLOEXEC, 0);
     if (ret < 0) {
         log_error("sgx_profile_init: opening /proc/self/mem failed: %d", ret);
         goto out;
@@ -235,7 +235,7 @@ static bool update_time(void) {
     uint64_t sample_time = ts.tv_sec * NSEC_IN_SEC + ts.tv_nsec;
 
     // Compare and update last recorded time per thread
-    PAL_TCB_HOST* tcb = get_tcb_host();
+    PAL_HOST_TCB* tcb = pal_get_host_tcb();
     if (tcb->profile_sample_time == 0) {
         tcb->profile_sample_time = sample_time;
         return false;
@@ -327,7 +327,7 @@ void sgx_profile_report_elf(const char* filename, void* addr) {
 
     // Open the file and mmap it.
 
-    int fd = DO_SYSCALL(open, path, O_RDONLY, 0);
+    int fd = DO_SYSCALL(open, path, O_RDONLY | O_CLOEXEC, 0);
     if (fd < 0) {
         log_error("sgx_profile_report_elf(%s): open failed: %d", filename, fd);
         return;

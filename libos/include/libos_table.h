@@ -83,7 +83,7 @@ long libos_syscall_clone(unsigned long flags, unsigned long user_stack_addr, int
                          int* child_tidptr, unsigned long tls);
 long libos_syscall_fork(void);
 long libos_syscall_vfork(void);
-long libos_syscall_execve(const char* file, const char** argv, const char** envp);
+long libos_syscall_execve(const char* file, const char* const* argv, const char* const* envp);
 long libos_syscall_exit(int error_code);
 long libos_syscall_waitid(int which, pid_t id, siginfo_t* infop, int options,
                           struct __kernel_rusage* ru);
@@ -154,9 +154,9 @@ long libos_syscall_gettid(void);
 long libos_syscall_tkill(int pid, int sig);
 long libos_syscall_time(time_t* tloc);
 long libos_syscall_futex(int* uaddr, int op, int val, void* utime, int* uaddr2, int val3);
-long libos_syscall_sched_setaffinity(pid_t pid, unsigned int cpumask_size,
+long libos_syscall_sched_setaffinity(pid_t pid, unsigned int user_mask_size,
                                      unsigned long* user_mask_ptr);
-long libos_syscall_sched_getaffinity(pid_t pid, unsigned int cpumask_size,
+long libos_syscall_sched_getaffinity(pid_t pid, unsigned int user_mask_size,
                                      unsigned long* user_mask_ptr);
 long libos_syscall_set_tid_address(int* tidptr);
 long libos_syscall_fadvise64(int fd, loff_t offset, size_t len, int advice);

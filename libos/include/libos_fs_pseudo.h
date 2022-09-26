@@ -215,6 +215,7 @@ int proc_thread_tid_list_names(struct libos_dentry* parent, readdir_callback_t c
 int proc_thread_follow_link(struct libos_dentry* dent, char** out_target);
 int proc_thread_maps_load(struct libos_dentry* dent, char** out_data, size_t* out_size);
 int proc_thread_cmdline_load(struct libos_dentry* dent, char** out_data, size_t* out_size);
+int proc_thread_status_load(struct libos_dentry* dent, char** out_data, size_t* out_size);
 bool proc_thread_fd_name_exists(struct libos_dentry* parent, const char* name);
 int proc_thread_fd_list_names(struct libos_dentry* parent, readdir_callback_t callback, void* arg);
 int proc_thread_fd_follow_link(struct libos_dentry* dent, char** out_target);
@@ -234,6 +235,7 @@ bool sys_resource_name_exists(struct libos_dentry* parent, const char* name);
 int sys_resource_list_names(struct libos_dentry* parent, readdir_callback_t callback, void* arg);
 int sys_node_general_load(struct libos_dentry* dent, char** out_data, size_t* out_size);
 int sys_node_load(struct libos_dentry* dent, char** out_data, size_t* out_size);
+int sys_node_meminfo_load(struct libos_dentry* dent, char** out_data, size_t* out_size);
 int sys_cpu_general_load(struct libos_dentry* dent, char** out_data, size_t* out_size);
 int sys_cpu_load_online(struct libos_dentry* dent, char** out_data, size_t* out_size);
 int sys_cpu_load_topology(struct libos_dentry* dent, char** out_data, size_t* out_size);
@@ -255,3 +257,6 @@ int sys_print_as_ranges(char* buf, size_t buf_size, size_t count,
 int sys_print_as_bitmask(char* buf, size_t buf_size, size_t count,
                          bool (*is_present)(size_t ind, const void* arg),
                          const void* callback_arg);
+
+/* etcfs */
+int init_etcfs(void);

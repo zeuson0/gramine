@@ -21,28 +21,13 @@
 struct libos_clone_args {
     PAL_HANDLE create_event;
     PAL_HANDLE initialize_event;
+    bool is_thread_initialized;
     struct libos_thread* thread;
     void* stack;
     unsigned long tls;
     PAL_CONTEXT* regs;
 };
 
-/*
- * This Function is a wrapper around the user provided function.
- * Code flow for clone is as follows -
- * 1) User application allocates stack for child process and
- *    calls clone. The clone code sets up the user function
- *    address and the argument address on the child stack.
- * 2)we Hijack the clone call and control flows to libos_clone
- * 3)In Shim Clone we just call the DK Api to create a thread by providing a
- *   wrapper function around the user provided function
- * 4)PAL layer allocates a stack and then invokes the clone syscall
- * 5)PAL runs thread_init function on PAL allocated Stack
- * 6)thread_init calls our wrapper and gives the user provided stack
- *   address.
- * 7.In the wrapper function ,we just do the stack switch to user
- *   Provided stack and execute the user Provided function.
- */
 static int clone_implementation_wrapper(void* arg_) {
     /* The child thread created by PAL is now running on the PAL allocated stack. We need to switch
      * to the user provided stack. */
@@ -95,6 +80,8 @@ static int clone_implementation_wrapper(void* arg_) {
 
     /* Inform the parent thread that we finished initialization. */
     PalEventSet(arg->initialize_event);
+    __atomic_store_n(&arg->is_thread_initialized, true, __ATOMIC_RELEASE);
+    /* We are not allowed to use `arg` after this point. */
 
     put_thread(my_thread);
 
@@ -115,6 +102,7 @@ static BEGIN_MIGRATION_DEF(fork, struct libos_process* process_description,
     DEFINE_MIGRATE(brk, NULL, 0);
     DEFINE_MIGRATE(loaded_elf_objects, NULL, 0);
     DEFINE_MIGRATE(topo_info, NULL, 0);
+    DEFINE_MIGRATE(etc_info, NULL, 0);
 #ifdef DEBUG
     DEFINE_MIGRATE(gdb_map, NULL, 0);
 #endif
@@ -363,7 +351,7 @@ long libos_syscall_clone(unsigned long flags, unsigned long user_stack_addr, int
 
         /* We should not have saved any references to this thread anywhere and `put_thread` below
          * should free it. */
-        assert(__atomic_load_n(&thread->ref_count.counter, __ATOMIC_RELAXED) == 1);
+        assert(refcount_get(&thread->ref_count) == 1);
 
         /* We do not own `thread->tid` aka `tid` anymore, clean it so that `put_thread` does not
          * try to release it. */
@@ -413,8 +401,18 @@ long libos_syscall_clone(unsigned long flags, unsigned long user_stack_addr, int
      * implies CLONE_SIGHAND). */
     assert(flags & CLONE_SIGHAND);
 
-    struct libos_clone_args new_args;
-    memset(&new_args, 0, sizeof(new_args));
+    struct libos_thread* self = get_cur_thread();
+    struct libos_clone_args new_args = {
+        .is_thread_initialized = false,
+        .stack = (void*)(user_stack_addr ?: pal_context_get_sp(self->libos_tcb->context.regs)),
+        .tls = tls,
+        .regs = self->libos_tcb->context.regs,
+        .thread = thread,
+    };
+
+    /* Increasing refcount due to copy above. Passing ownership of the new copy
+     * of this pointer to the new thread (receiver of new_args). */
+    get_thread(thread);
 
     ret = PalEventCreate(&new_args.create_event, /*init_signaled=*/false, /*auto_clear=*/false);
     if (ret < 0) {
@@ -428,21 +426,10 @@ long libos_syscall_clone(unsigned long flags, unsigned long user_stack_addr, int
         goto clone_thread_failed;
     }
 
-    struct libos_thread* self = get_cur_thread();
-
-    /* Increasing refcount due to copy below. Passing ownership of the new copy
-     * of this pointer to the new thread (receiver of new_args). */
-    get_thread(thread);
-    new_args.thread = thread;
-    new_args.stack  = (void*)(user_stack_addr ?: pal_context_get_sp(self->libos_tcb->context.regs));
-    new_args.tls    = tls;
-    new_args.regs   = self->libos_tcb->context.regs;
-
     PAL_HANDLE pal_handle = NULL;
     ret = PalThreadCreate(clone_implementation_wrapper, &new_args, &pal_handle);
     if (ret < 0) {
         ret = pal_to_unix_errno(ret);
-        put_thread(new_args.thread);
         goto clone_thread_failed;
     }
 
@@ -459,6 +446,11 @@ long libos_syscall_clone(unsigned long flags, unsigned long user_stack_addr, int
         log_error("event_wait_with_retry failed with: %ld", ret);
         PalProcessExit(1);
     }
+    /* Wait for the new thread to finish initialization. We need to make sure that it's done using
+     * `new_args`, as we did not pass ownership (nor made a copy) of it. */
+    while (!__atomic_load_n(&new_args.is_thread_initialized, __ATOMIC_ACQUIRE)) {
+        CPU_RELAX();
+    }
     PalObjectClose(new_args.initialize_event);
     PalObjectClose(new_args.create_event);
 
@@ -466,6 +458,8 @@ long libos_syscall_clone(unsigned long flags, unsigned long user_stack_addr, int
     return tid;
 
 clone_thread_failed:
+    if (new_args.thread)
+        put_thread(new_args.thread);
     if (new_args.create_event)
         PalObjectClose(new_args.create_event);
     if (new_args.initialize_event)

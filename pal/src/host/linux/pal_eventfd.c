@@ -19,12 +19,9 @@
 #include "pal_linux_error.h"
 
 static inline int eventfd_type(pal_stream_options_t options) {
-    int type = 0;
+    int type = EFD_CLOEXEC;
     if (options & PAL_OPTION_NONBLOCK)
         type |= EFD_NONBLOCK;
-
-    if (options & PAL_OPTION_CLOEXEC)
-        type |= EFD_CLOEXEC;
 
     if (options & PAL_OPTION_EFD_SEMAPHORE)
         type |= EFD_SEMAPHORE;
@@ -72,7 +69,7 @@ static int64_t eventfd_pal_read(PAL_HANDLE handle, uint64_t offset, uint64_t len
     if (offset)
         return -PAL_ERROR_INVAL;
 
-    if (HANDLE_HDR(handle)->type != PAL_TYPE_EVENTFD)
+    if (handle->hdr.type != PAL_TYPE_EVENTFD)
         return -PAL_ERROR_NOTCONNECTION;
 
     if (len < sizeof(uint64_t))
@@ -91,7 +88,7 @@ static int64_t eventfd_pal_write(PAL_HANDLE handle, uint64_t offset, uint64_t le
     if (offset)
         return -PAL_ERROR_INVAL;
 
-    if (HANDLE_HDR(handle)->type != PAL_TYPE_EVENTFD)
+    if (handle->hdr.type != PAL_TYPE_EVENTFD)
         return -PAL_ERROR_NOTCONNECTION;
 
     if (len < sizeof(uint64_t))
@@ -111,7 +108,7 @@ static int eventfd_pal_attrquerybyhdl(PAL_HANDLE handle, PAL_STREAM_ATTR* attr) 
     if (handle->eventfd.fd == PAL_IDX_POISON)
         return -PAL_ERROR_BADHANDLE;
 
-    attr->handle_type  = HANDLE_HDR(handle)->type;
+    attr->handle_type  = handle->hdr.type;
     attr->nonblocking  = handle->eventfd.nonblocking;
 
     /* get number of bytes available for reading */
@@ -125,7 +122,7 @@ static int eventfd_pal_attrquerybyhdl(PAL_HANDLE handle, PAL_STREAM_ATTR* attr) 
 }
 
 static int eventfd_pal_close(PAL_HANDLE handle) {
-    if (HANDLE_HDR(handle)->type == PAL_TYPE_EVENTFD) {
+    if (handle->hdr.type == PAL_TYPE_EVENTFD) {
         if (handle->eventfd.fd != PAL_IDX_POISON) {
             DO_SYSCALL(close, handle->eventfd.fd);
             handle->eventfd.fd = PAL_IDX_POISON;

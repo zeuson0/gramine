@@ -35,16 +35,9 @@ struct pal_common_state {
 extern struct pal_common_state g_pal_common_state;
 extern struct pal_public_state g_pal_public_state;
 
-// TODO: clean unused stuff
 /* handle_ops is the operators provided for each handler type. They are mostly used by
  * stream-related PAL calls, but can also be used by some others in special ways. */
 struct handle_ops {
-    /* 'getrealpath' return the real path that represent the handle */
-    const char* (*getrealpath)(PAL_HANDLE handle);
-
-    /* 'getname' is used by PalStreamGetName. It's different from 'getrealpath' */
-    int (*getname)(PAL_HANDLE handle, char* buffer, size_t count);
-
     /* 'open' is used by PalStreamOpen. 'handle' is a preallocated handle, 'type' will be a
      * normalized prefix, 'uri' is the remaining string of uri. access, share, create, and options
      * follow the same flags defined for PalStreamOpen in pal.h. */
@@ -55,13 +48,6 @@ struct handle_ops {
      * prototype as them. */
     int64_t (*read)(PAL_HANDLE handle, uint64_t offset, uint64_t count, void* buffer);
     int64_t (*write)(PAL_HANDLE handle, uint64_t offset, uint64_t count, const void* buffer);
-
-    /* 'readbyaddr' and 'writebyaddr' are the same as read and write, but with extra field to
-     * specify address */
-    int64_t (*readbyaddr)(PAL_HANDLE handle, uint64_t offset, uint64_t count, void* buffer,
-                          char* addr, size_t addrlen);
-    int64_t (*writebyaddr)(PAL_HANDLE handle, uint64_t offset, uint64_t count, const void* buffer,
-                           const char* addr, size_t addrlen);
 
     /* 'close' and 'delete' is used by PalObjectClose and PalStreamDelete, 'close' will close the
      * stream, while 'delete' actually destroy the stream, such as deleting a file or shutting
@@ -106,7 +92,7 @@ struct handle_ops {
 extern const struct handle_ops* g_pal_handle_ops[];
 
 static inline const struct handle_ops* HANDLE_OPS(PAL_HANDLE handle) {
-    int _type = PAL_GET_TYPE(handle);
+    int _type = handle->hdr.type;
     if (_type < 0 || _type >= PAL_HANDLE_TYPE_BOUND)
         return NULL;
     if (handle->hdr.ops) {
@@ -129,11 +115,11 @@ struct socket_ops {
     int (*bind)(PAL_HANDLE handle, struct pal_socket_addr* addr);
     int (*listen)(PAL_HANDLE handle, unsigned int backlog);
     int (*accept)(PAL_HANDLE handle, pal_stream_options_t options, PAL_HANDLE* out_client,
-                  struct pal_socket_addr* out_client_addr);
+                  struct pal_socket_addr* out_client_addr, struct pal_socket_addr* out_local_addr);
     int (*connect)(PAL_HANDLE handle, struct pal_socket_addr* addr,
                    struct pal_socket_addr* out_local_addr);
     int (*send)(PAL_HANDLE handle, struct pal_iovec* iov, size_t iov_len, size_t* out_size,
-                struct pal_socket_addr* addr);
+                struct pal_socket_addr* addr, bool force_nonblocking);
     int (*recv)(PAL_HANDLE handle, struct pal_iovec* iov, size_t iov_len, size_t* out_size,
                 struct pal_socket_addr* addr, bool force_nonblocking);
 };
@@ -158,14 +144,14 @@ int add_preloaded_range(uintptr_t start, uintptr_t end, const char* comment);
 /*!
  * \brief Main initialization function.
  *
- * This function must be called by the host-specific loader.
- *
  * \param instance_id     Current instance ID.
  * \param exec_uri        Executable URI.
  * \param parent_process  Parent process if it's a child.
  * \param first_thread    First thread handle.
  * \param arguments       Application arguments.
  * \param environments    Environment variables.
+ *
+ * This function must be called by the host-specific loader.
  */
 noreturn void pal_main(uint64_t instance_id, PAL_HANDLE parent_process, PAL_HANDLE first_thread,
                        const char** arguments, const char** environments);
@@ -179,16 +165,13 @@ unsigned long _PalMemoryAvailableQuota(void);
 // Returns 0 on success, negative PAL code on failure
 int _PalGetCPUInfo(struct pal_cpu_info* info);
 
-/* Internal DK calls, in case any of the internal routines needs to use them */
 /* PalStream calls */
 int _PalStreamOpen(PAL_HANDLE* handle, const char* uri, enum pal_access access,
                    pal_share_flags_t share, enum pal_create_mode create,
                    pal_stream_options_t options);
 int _PalStreamDelete(PAL_HANDLE handle, enum pal_delete_mode delete_mode);
-int64_t _PalStreamRead(PAL_HANDLE handle, uint64_t offset, uint64_t count, void* buf, char* addr,
-                       int addrlen);
-int64_t _PalStreamWrite(PAL_HANDLE handle, uint64_t offset, uint64_t count, const void* buf,
-                        const char* addr, int addrlen);
+int64_t _PalStreamRead(PAL_HANDLE handle, uint64_t offset, uint64_t count, void* buf);
+int64_t _PalStreamWrite(PAL_HANDLE handle, uint64_t offset, uint64_t count, const void* buf);
 int _PalStreamAttributesQuery(const char* uri, PAL_STREAM_ATTR* attr);
 int _PalStreamAttributesQueryByHandle(PAL_HANDLE hdl, PAL_STREAM_ATTR* attr);
 int _PalStreamMap(PAL_HANDLE handle, void** addr_ptr, pal_prot_flags_t prot, uint64_t offset,
@@ -196,8 +179,6 @@ int _PalStreamMap(PAL_HANDLE handle, void** addr_ptr, pal_prot_flags_t prot, uin
 int _PalStreamUnmap(void* addr, uint64_t size);
 int64_t _PalStreamSetLength(PAL_HANDLE handle, uint64_t length);
 int _PalStreamFlush(PAL_HANDLE handle);
-int _PalStreamGetName(PAL_HANDLE handle, char* buf, size_t size);
-const char* _PalStreamRealpath(PAL_HANDLE hdl);
 int _PalSendHandle(PAL_HANDLE target_process, PAL_HANDLE cargo);
 int _PalReceiveHandle(PAL_HANDLE source_process, PAL_HANDLE* out_cargo);
 
@@ -206,11 +187,12 @@ int _PalSocketCreate(enum pal_socket_domain domain, enum pal_socket_type type,
 int _PalSocketBind(PAL_HANDLE handle, struct pal_socket_addr* addr);
 int _PalSocketListen(PAL_HANDLE handle, unsigned int backlog);
 int _PalSocketAccept(PAL_HANDLE handle, pal_stream_options_t options, PAL_HANDLE* out_client,
-                     struct pal_socket_addr* out_client_addr);
+                     struct pal_socket_addr* out_client_addr,
+                     struct pal_socket_addr* out_local_addr);
 int _PalSocketConnect(PAL_HANDLE handle, struct pal_socket_addr* addr,
                       struct pal_socket_addr* out_local_addr);
 int _PalSocketSend(PAL_HANDLE handle, struct pal_iovec* iov, size_t iov_len, size_t* out_size,
-                   struct pal_socket_addr* addr);
+                   struct pal_socket_addr* addr, bool force_nonblocking);
 int _PalSocketRecv(PAL_HANDLE handle, struct pal_iovec* iov, size_t iov_len, size_t* out_total_size,
                    struct pal_socket_addr* addr, bool force_nonblocking);
 
@@ -221,8 +203,8 @@ void _PalThreadYieldExecution(void);
 int _PalThreadResume(PAL_HANDLE thread_handle);
 int _PalProcessCreate(PAL_HANDLE* handle, const char** args);
 noreturn void _PalProcessExit(int exit_code);
-int _PalThreadSetCpuAffinity(PAL_HANDLE thread, size_t cpumask_size, unsigned long* cpu_mask);
-int _PalThreadGetCpuAffinity(PAL_HANDLE thread, size_t cpumask_size, unsigned long* cpu_mask);
+int _PalThreadSetCpuAffinity(PAL_HANDLE thread, unsigned long* cpu_mask, size_t cpu_mask_len);
+int _PalThreadGetCpuAffinity(PAL_HANDLE thread, unsigned long* cpu_mask, size_t cpu_mask_len);
 
 /* PalEvent calls */
 int _PalEventCreate(PAL_HANDLE* handle_ptr, bool init_signaled, bool auto_clear);
@@ -244,7 +226,6 @@ int _PalStreamsWaitEvents(size_t count, PAL_HANDLE* handle_array, pal_wait_flags
 /* PalException calls & structures */
 pal_event_handler_t _PalGetExceptionHandler(enum pal_event event);
 
-/* other DK calls */
 int _PalSystemTimeQuery(uint64_t* out_usec);
 
 /*

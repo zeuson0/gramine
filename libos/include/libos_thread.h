@@ -13,6 +13,7 @@
 #include "api.h"
 #include "libos_internal.h"
 #include "libos_pollable_event.h"
+#include "libos_refcount.h"
 #include "libos_signal.h"
 #include "libos_tcb.h"
 #include "libos_types.h"
@@ -32,7 +33,7 @@ struct wake_queue_head {
 struct libos_signal_dispositions {
     struct __kernel_sigaction actions[SIGS_CNT];
     struct libos_lock lock;
-    REFTYPE ref_count;
+    refcount_t ref_count;
 };
 
 /* For more info see: man signal(7) */
@@ -55,6 +56,8 @@ struct libos_signal_queue {
     struct libos_signal standard_signals[SIGRTMIN - 1];
     struct libos_rt_signal_queue rt_signal_queues[SIGS_CNT - SIGRTMIN + 1];
 };
+
+#define GET_CPU_MASK_LEN() (BITS_TO_LONGS(g_pal_public_state->topo_info.threads_cnt))
 
 DEFINE_LIST(libos_thread);
 DEFINE_LISTP(libos_thread);
@@ -128,7 +131,9 @@ struct libos_thread {
     libos_tcb_t* libos_tcb;
     void* frameptr;
 
-    REFTYPE ref_count;
+    unsigned long* cpu_affinity_mask;
+
+    refcount_t ref_count;
     struct libos_lock lock;
 };
 

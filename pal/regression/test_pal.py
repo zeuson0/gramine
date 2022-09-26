@@ -15,12 +15,6 @@ from graminelibos.regression import (
     expectedFailureIf,
 )
 
-CPUINFO_FLAGS_WHITELIST = [
-    'fpu', 'vme', 'de', 'pse', 'tsc', 'msr', 'pae', 'mce', 'cx8', 'apic', 'sep',
-    'mtrr', 'pge', 'mca', 'cmov', 'pat', 'pse36', 'pn', 'clflush', 'dts',
-    'acpi', 'mmx', 'fxsr', 'sse', 'sse2', 'ss', 'ht', 'tm', 'ia64', 'pbe',
-]
-
 
 class TC_00_Basic(RegressionTestCase):
     def test_001_path_normalization(self):
@@ -62,7 +56,7 @@ class TC_00_BasicSet2(RegressionTestCase):
     @unittest.skipIf(HAS_SGX, "Pipes must be created in two parallel threads under SGX")
     def test_Process4(self):
         _, stderr = self.run_binary(['Process4'], timeout=5)
-        self.assertIn('In process: Process4', stderr)
+        self.assertRegex(stderr, r'In process: .*Process4')
         self.assertIn('wall time = ', stderr)
         for i in range(100):
             self.assertIn('In process: Process4 %d ' % i, stderr)
@@ -82,7 +76,7 @@ class TC_01_Bootstrap(RegressionTestCase):
 
         # One Argument Given
         self.assertIn('# of Arguments: 1', stderr)
-        self.assertIn('argv[0] = Bootstrap', stderr)
+        self.assertRegex(stderr, r'argv\[0\] = .*Bootstrap')
 
         # Control Block: Debug Stream (Inline)
         self.assertIn('Written to Debug Stream', stderr)
@@ -105,9 +99,6 @@ class TC_01_Bootstrap(RegressionTestCase):
             cpuinfo = file_.read().strip().split('\n\n')[-1]
         cpuinfo = dict(map(str.strip, line.split(':'))
             for line in cpuinfo.split('\n'))
-        if 'flags' in cpuinfo:
-            cpuinfo['flags'] = ' '.join(flag for flag in cpuinfo['flags']
-                if flag in CPUINFO_FLAGS_WHITELIST)
 
         _, stderr = self.run_binary(['Bootstrap'])
 
@@ -118,7 +109,6 @@ class TC_01_Bootstrap(RegressionTestCase):
         self.assertIn('CPU family: {[cpu family]}'.format(cpuinfo), stderr)
         self.assertIn('CPU model: {[model]}'.format(cpuinfo), stderr)
         self.assertIn('CPU stepping: {[stepping]}'.format(cpuinfo), stderr)
-        self.assertIn('CPU flags: {[flags]}'.format(cpuinfo), stderr)
 
     def test_103_dotdot(self):
         _, stderr = self.run_binary(['..Bootstrap'])
@@ -163,7 +153,6 @@ class TC_02_Symbols(RegressionTestCase):
         'PalStreamAttributesQuery',
         'PalStreamAttributesQueryByHandle',
         'PalStreamAttributesSetByHandle',
-        'PalStreamGetName',
         'PalStreamChangeName',
         'PalThreadCreate',
         'PalThreadYieldExecution',
@@ -298,7 +287,8 @@ class TC_20_SingleProcess(RegressionTestCase):
         self.assertFalse(pathlib.Path('file_delete.tmp').exists())
 
     def test_110_directory(self):
-        for path in ['dir_exist.tmp', 'dir_nonexist.tmp', 'dir_delete.tmp']:
+        for path in ['dir_exist.tmp', 'dir_nonexist.tmp', 'dir_delete.tmp',
+                     'dir_rename.tmp', 'dir_rename_delete.tmp']:
             try:
                 shutil.rmtree(path)
             except FileNotFoundError:
@@ -337,6 +327,8 @@ class TC_20_SingleProcess(RegressionTestCase):
 
         # Directory Deletion
         self.assertFalse(pathlib.Path('dir_delete.tmp').exists())
+        self.assertFalse(pathlib.Path('dir_rename.tmp').exists())
+        self.assertFalse(pathlib.Path('dir_rename_delete.tmp').exists())
 
     def test_200_event(self):
         _, stderr = self.run_binary(['Event'])
@@ -480,6 +472,15 @@ class TC_23_SendHandle(RegressionTestCase):
         _, stderr = self.run_binary(['send_handle'])
         self.assertIn('Parent: test OK', stderr)
         self.assertIn('Child: test OK', stderr)
+
+class TC_30_IPParser(RegressionTestCase):
+    def test_000_ipv4(self):
+        _, stderr = self.run_binary(['ipv4_parser'])
+        self.assertIn('TEST OK', stderr)
+
+    def test_010_ipv6(self):
+        _, stderr = self.run_binary(['ipv6_parser'])
+        self.assertIn('TEST OK', stderr)
 
 @unittest.skipUnless(HAS_SGX, 'This test is only meaningful on SGX PAL')
 class TC_50_Attestation(RegressionTestCase):

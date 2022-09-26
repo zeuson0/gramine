@@ -154,7 +154,7 @@ static int close(PAL_HANDLE handle) {
 }
 
 static int bind(PAL_HANDLE handle, struct pal_socket_addr* addr) {
-    assert(PAL_GET_TYPE(handle) == PAL_TYPE_SOCKET);
+    assert(handle->hdr.type == PAL_TYPE_SOCKET);
     if (addr->domain != handle->sock.domain) {
         return -PAL_ERROR_INVAL;
     }
@@ -188,21 +188,25 @@ static int bind(PAL_HANDLE handle, struct pal_socket_addr* addr) {
 }
 
 static int tcp_listen(PAL_HANDLE handle, unsigned int backlog) {
-    assert(PAL_GET_TYPE(handle) == PAL_TYPE_SOCKET);
+    assert(handle->hdr.type == PAL_TYPE_SOCKET);
     int ret = ocall_listen_simple(handle->sock.fd, backlog);
     return unix_to_pal_error(ret);
 }
 
 static int tcp_accept(PAL_HANDLE handle, pal_stream_options_t options, PAL_HANDLE* out_client,
-                      struct pal_socket_addr* out_client_addr) {
-    assert(PAL_GET_TYPE(handle) == PAL_TYPE_SOCKET);
+                      struct pal_socket_addr* out_client_addr,
+                      struct pal_socket_addr* out_local_addr) {
+    assert(handle->hdr.type == PAL_TYPE_SOCKET);
 
-    struct sockaddr_storage sa_storage = { 0 };
-    size_t linux_addrlen = sizeof(sa_storage);
+    struct sockaddr_storage client_addr = { 0 };
+    size_t client_addrlen = sizeof(client_addr);
+    struct sockaddr_storage local_addr = { 0 };
+    size_t local_addrlen = sizeof(local_addr);
     int flags = options & PAL_OPTION_NONBLOCK ? SOCK_NONBLOCK : 0;
     flags |= SOCK_CLOEXEC;
 
-    int fd = ocall_accept(handle->sock.fd, (void*)&sa_storage, &linux_addrlen, flags);
+    int fd = ocall_accept(handle->sock.fd, (void*)&client_addr, &client_addrlen,
+                          (void*)&local_addr, &local_addrlen, flags);
     if (fd < 0) {
         return unix_to_pal_error(fd);
     }
@@ -218,15 +222,24 @@ static int tcp_accept(PAL_HANDLE handle, pal_stream_options_t options, PAL_HANDL
         return -PAL_ERROR_NOMEM;
     }
 
-    if (out_client_addr) {
-        int ret = verify_ip_addr(client->sock.domain, &sa_storage, linux_addrlen);
-        if (ret < 0) {
-            _PalObjectClose(client);
-            return ret;
-        }
+    int ret = verify_ip_addr(client->sock.domain, &client_addr, client_addrlen);
+    if (ret < 0) {
+        _PalObjectClose(client);
+        return ret;
+    }
+    ret = verify_ip_addr(client->sock.domain, &local_addr, local_addrlen);
+    if (ret < 0) {
+        _PalObjectClose(client);
+        return ret;
+    }
 
-        linux_to_pal_sockaddr(&sa_storage, out_client_addr);
+    if (out_client_addr) {
+        linux_to_pal_sockaddr(&client_addr, out_client_addr);
         assert(out_client_addr->domain == client->sock.domain);
+    }
+    if (out_local_addr) {
+        linux_to_pal_sockaddr(&local_addr, out_local_addr);
+        assert(out_local_addr->domain == client->sock.domain);
     }
 
     *out_client = client;
@@ -235,7 +248,7 @@ static int tcp_accept(PAL_HANDLE handle, pal_stream_options_t options, PAL_HANDL
 
 static int connect(PAL_HANDLE handle, struct pal_socket_addr* addr,
                    struct pal_socket_addr* out_local_addr) {
-    assert(PAL_GET_TYPE(handle) == PAL_TYPE_SOCKET);
+    assert(handle->hdr.type == PAL_TYPE_SOCKET);
     if (addr->domain != PAL_DISCONNECT && addr->domain != handle->sock.domain) {
         return -PAL_ERROR_INVAL;
     }
@@ -261,7 +274,7 @@ static int connect(PAL_HANDLE handle, struct pal_socket_addr* addr,
 }
 
 static int attrquerybyhdl(PAL_HANDLE handle, PAL_STREAM_ATTR* attr) {
-    assert(PAL_GET_TYPE(handle) == PAL_TYPE_SOCKET);
+    assert(handle->hdr.type == PAL_TYPE_SOCKET);
 
     memset(attr, 0, sizeof(*attr));
 
@@ -289,7 +302,7 @@ static int attrquerybyhdl(PAL_HANDLE handle, PAL_STREAM_ATTR* attr) {
 /* Warning: if this is used to change two fields and the second set fails, the first set is not
  * undone. */
 static int attrsetbyhdl_common(PAL_HANDLE handle, PAL_STREAM_ATTR* attr) {
-    assert(PAL_GET_TYPE(handle) == PAL_TYPE_SOCKET);
+    assert(handle->hdr.type == PAL_TYPE_SOCKET);
     if (attr->handle_type != PAL_TYPE_SOCKET) {
         return -PAL_ERROR_INVAL;
     }
@@ -442,8 +455,8 @@ static int attrsetbyhdl_udp(PAL_HANDLE handle, PAL_STREAM_ATTR* attr) {
 }
 
 static int send(PAL_HANDLE handle, struct pal_iovec* pal_iov, size_t iov_len, size_t* out_size,
-                struct pal_socket_addr* addr) {
-    assert(PAL_GET_TYPE(handle) == PAL_TYPE_SOCKET);
+                struct pal_socket_addr* addr, bool force_nonblocking) {
+    assert(handle->hdr.type == PAL_TYPE_SOCKET);
 
     struct sockaddr_storage sa_storage;
     size_t linux_addrlen = 0;
@@ -464,8 +477,9 @@ static int send(PAL_HANDLE handle, struct pal_iovec* pal_iov, size_t iov_len, si
         iov[i].iov_len = pal_iov[i].iov_len;
     }
 
+    unsigned int flags = force_nonblocking ? MSG_DONTWAIT : 0;
     ssize_t ret = ocall_send(handle->sock.fd, iov, iov_len, addr ? &sa_storage : NULL,
-                             linux_addrlen, /*control=*/NULL, /*controllen=*/0);
+                             linux_addrlen, /*control=*/NULL, /*controllen=*/0, flags);
     free(iov);
     if (ret < 0) {
         return unix_to_pal_error(ret);
@@ -476,7 +490,7 @@ static int send(PAL_HANDLE handle, struct pal_iovec* pal_iov, size_t iov_len, si
 
 static int recv(PAL_HANDLE handle, struct pal_iovec* pal_iov, size_t iov_len,
                 size_t* out_total_size, struct pal_socket_addr* addr, bool force_nonblocking) {
-    assert(PAL_GET_TYPE(handle) == PAL_TYPE_SOCKET);
+    assert(handle->hdr.type == PAL_TYPE_SOCKET);
 
     struct sockaddr_storage sa_storage;
     size_t linux_addrlen = addr ? sizeof(sa_storage) : 0;
@@ -515,7 +529,7 @@ static int recv(PAL_HANDLE handle, struct pal_iovec* pal_iov, size_t iov_len,
 }
 
 static int delete_tcp(PAL_HANDLE handle, enum pal_delete_mode mode) {
-    assert(PAL_GET_TYPE(handle) == PAL_TYPE_SOCKET);
+    assert(handle->hdr.type == PAL_TYPE_SOCKET);
     int how;
     switch (mode) {
         case PAL_DELETE_ALL:
@@ -572,7 +586,7 @@ static struct handle_ops g_udp_handle_ops = {
 };
 
 void fixup_socket_handle_after_deserialization(PAL_HANDLE handle) {
-    assert(PAL_GET_TYPE(handle) == PAL_TYPE_SOCKET);
+    assert(handle->hdr.type == PAL_TYPE_SOCKET);
     switch (handle->sock.type) {
         case PAL_SOCKET_TCP:
             handle->sock.ops = &g_tcp_sock_ops;
@@ -603,11 +617,12 @@ int _PalSocketListen(PAL_HANDLE handle, unsigned int backlog) {
 }
 
 int _PalSocketAccept(PAL_HANDLE handle, pal_stream_options_t options, PAL_HANDLE* out_client,
-                     struct pal_socket_addr* out_client_addr) {
+                     struct pal_socket_addr* out_client_addr,
+                     struct pal_socket_addr* out_local_addr) {
     if (!handle->sock.ops->accept) {
         return -PAL_ERROR_NOTSUPPORT;
     }
-    return handle->sock.ops->accept(handle, options, out_client, out_client_addr);
+    return handle->sock.ops->accept(handle, options, out_client, out_client_addr, out_local_addr);
 }
 
 int _PalSocketConnect(PAL_HANDLE handle, struct pal_socket_addr* addr,
@@ -619,11 +634,11 @@ int _PalSocketConnect(PAL_HANDLE handle, struct pal_socket_addr* addr,
 }
 
 int _PalSocketSend(PAL_HANDLE handle, struct pal_iovec* iov, size_t iov_len, size_t* out_size,
-                   struct pal_socket_addr* addr) {
+                   struct pal_socket_addr* addr, bool force_nonblocking) {
     if (!handle->sock.ops->send) {
         return -PAL_ERROR_NOTSUPPORT;
     }
-    return handle->sock.ops->send(handle, iov, iov_len, out_size, addr);
+    return handle->sock.ops->send(handle, iov, iov_len, out_size, addr, force_nonblocking);
 }
 
 int _PalSocketRecv(PAL_HANDLE handle, struct pal_iovec* iov, size_t iov_len, size_t* out_total_size,

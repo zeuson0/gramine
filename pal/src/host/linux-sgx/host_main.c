@@ -12,8 +12,9 @@
 
 #include "asan.h"
 #include "debug_map.h"
+#include "etc_host_info.h"
 #include "gdb_integration/sgx_gdb.h"
-#include "host_enclave.h"
+#include "host_ecalls.h"
 #include "host_internal.h"
 #include "host_log.h"
 #include "linux_utils.h"
@@ -22,7 +23,7 @@
 #include "pal_linux_error.h"
 #include "pal_rpc_queue.h"
 #include "pal_rtld.h"
-#include "pal_tls.h"
+#include "pal_tcb.h"
 #include "toml.h"
 #include "toml_utils.h"
 #include "topo_info.h"
@@ -208,11 +209,14 @@ static int initialize_enclave(struct pal_enclave* enclave, const char* manifest_
     char* token_path = NULL;
     int sigfile_fd = -1, token_fd = -1;
     int enclave_mem = -1;
+    size_t areas_size = 0;
+    struct mem_area* areas = NULL;
 
     /* this array may overflow the stack, so we allocate it in BSS */
     static void* tcs_addrs[MAX_DBG_THREADS];
 
-    enclave_image = DO_SYSCALL(open, enclave->libpal_uri + URI_PREFIX_FILE_LEN, O_RDONLY, 0);
+    enclave_image = DO_SYSCALL(open, enclave->libpal_uri + URI_PREFIX_FILE_LEN,
+                               O_RDONLY | O_CLOEXEC, 0);
     if (enclave_image < 0) {
         log_error("Cannot find enclave image: %s", enclave->libpal_uri);
         ret = enclave_image;
@@ -334,8 +338,16 @@ static int initialize_enclave(struct pal_enclave* enclave, const char* manifest_
      * + enclave->thread_num for normal stack
      * + enclave->thread_num for signal stack
      */
-    int max_area_cnt = 10 + enclave->thread_num * 2;
-    struct mem_area* areas = __alloca(sizeof(areas[0]) * max_area_cnt);
+    areas_size = ALIGN_UP_POW2(sizeof(*areas) * (10 + enclave->thread_num * 2), PRESET_PAGESIZE);
+    areas = (struct mem_area*)DO_SYSCALL(mmap, NULL, areas_size, PROT_READ | PROT_WRITE,
+                                         MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (IS_PTR_ERR(areas)) {
+        log_error("Allocating memory failed (%ld)", PTR_TO_ERR(areas));
+        areas = NULL;
+        ret = -ENOMEM;
+        goto out;
+    }
+
     int area_num = 0;
 
     /* The manifest needs to be allocated at the upper end of the enclave
@@ -468,7 +480,7 @@ static int initialize_enclave(struct pal_enclave* enclave, const char* manifest_
 
         if (areas[i].data_src == TLS) {
             for (uint32_t t = 0; t < enclave->thread_num; t++) {
-                struct enclave_tls* gs = data + g_page_size * t;
+                struct pal_enclave_tcb* gs = data + g_page_size * t;
                 memset(gs, 0, g_page_size);
                 assert(sizeof(*gs) <= g_page_size);
                 gs->common.self = (PAL_TCB*)(tls_area->addr + g_page_size * t);
@@ -548,7 +560,7 @@ static int initialize_enclave(struct pal_enclave* enclave, const char* manifest_
 
     if (g_sgx_enable_stats || g_vtune_profile_enabled) {
         /* set TCS.FLAGS.DBGOPTIN in all enclave threads to enable perf counters, Intel PT, etc */
-        ret = DO_SYSCALL(open, "/proc/self/mem", O_RDWR | O_LARGEFILE, 0);
+        ret = DO_SYSCALL(open, "/proc/self/mem", O_RDWR | O_LARGEFILE | O_CLOEXEC, 0);
         if (ret < 0) {
             log_error("Setting TCS.FLAGS.DBGOPTIN failed: %d", ret);
             goto out;
@@ -608,13 +620,16 @@ out:
         DO_SYSCALL(close, sigfile_fd);
     if (token_fd >= 0)
         DO_SYSCALL(close, token_fd);
+    if (areas)
+        DO_SYSCALL(munmap, areas, areas_size);
     free(sig_path);
     free(token_path);
     return ret;
 }
 
 /* Parses only the information needed by the untrusted PAL to correctly initialize the enclave. */
-static int parse_loader_config(char* manifest, struct pal_enclave* enclave_info) {
+static int parse_loader_config(char* manifest, struct pal_enclave* enclave_info,
+                               bool* extra_runtime_domain_names_conf) {
     int ret = 0;
     toml_table_t* manifest_root = NULL;
     char* dummy_sigfile_str = NULL;
@@ -661,13 +676,7 @@ static int parse_loader_config(char* manifest, struct pal_enclave* enclave_info)
         goto out;
     }
 
-    enclave_info->thread_num = thread_num_int64;
-
-    if (!enclave_info->thread_num) {
-        log_warning("Number of enclave threads ('sgx.thread_num') is not specified; assumed "
-                    "to be 1");
-        enclave_info->thread_num = 1;
-    }
+    enclave_info->thread_num = thread_num_int64 ?: 1;
 
     if (enclave_info->thread_num > MAX_DBG_THREADS) {
         log_error("Too large 'sgx.thread_num', maximum allowed is %d", MAX_DBG_THREADS);
@@ -676,15 +685,16 @@ static int parse_loader_config(char* manifest, struct pal_enclave* enclave_info)
     }
 
     int64_t rpc_thread_num_int64;
-    ret = toml_int_in(manifest_root, "sgx.rpc_thread_num", /*defaultval=*/0, &rpc_thread_num_int64);
+    ret = toml_int_in(manifest_root, "sgx.insecure__rpc_thread_num", /*defaultval=*/0,
+                      &rpc_thread_num_int64);
     if (ret < 0) {
-        log_error("Cannot parse 'sgx.rpc_thread_num'");
+        log_error("Cannot parse 'sgx.insecure__rpc_thread_num'");
         ret = -EINVAL;
         goto out;
     }
 
     if (rpc_thread_num_int64 < 0) {
-        log_error("Negative 'sgx.rpc_thread_num' is impossible");
+        log_error("Negative 'sgx.insecure__rpc_thread_num' is impossible");
         ret = -EINVAL;
         goto out;
     }
@@ -692,7 +702,8 @@ static int parse_loader_config(char* manifest, struct pal_enclave* enclave_info)
     enclave_info->rpc_thread_num = rpc_thread_num_int64;
 
     if (enclave_info->rpc_thread_num > MAX_RPC_THREADS) {
-        log_error("Too large 'sgx.rpc_thread_num', maximum allowed is %d", MAX_RPC_THREADS);
+        log_error("Too large 'sgx.insecure__rpc_thread_num', maximum allowed is %d",
+                  MAX_RPC_THREADS);
         ret = -EINVAL;
         goto out;
     }
@@ -881,6 +892,13 @@ static int parse_loader_config(char* manifest, struct pal_enclave* enclave_info)
     }
     g_host_log_level = log_level;
 
+    ret = toml_bool_in(manifest_root, "sys.enable_extra_runtime_domain_names_conf",
+                       /*defaultval=*/false, extra_runtime_domain_names_conf);
+    if (ret < 0) {
+        log_error("Cannot parse 'sys.enable_extra_runtime_domain_names_conf'");
+        goto out;
+    }
+
     ret = 0;
 
 out:
@@ -902,7 +920,8 @@ static int load_enclave(struct pal_enclave* enclave, char* args, size_t args_siz
     int ret;
     struct timeval tv;
     struct pal_topo_info topo_info = {0};
-
+    struct pal_dns_host_conf dns_conf = {0};
+    bool extra_runtime_domain_names_conf;
     uint64_t start_time;
     DO_SYSCALL(gettimeofday, &tv, NULL);
     start_time = tv.tv_sec * 1000000UL + tv.tv_usec;
@@ -911,7 +930,7 @@ static int load_enclave(struct pal_enclave* enclave, char* args, size_t args_siz
         /* only print during main process's startup (note that this message is always printed) */
         log_always("Gramine is starting. Parsing TOML manifest file, this may take some time...");
     }
-    ret = parse_loader_config(enclave->raw_manifest_data, enclave);
+    ret = parse_loader_config(enclave->raw_manifest_data, enclave, &extra_runtime_domain_names_conf);
     if (ret < 0) {
         log_error("Parsing manifest failed");
         return -EINVAL;
@@ -925,12 +944,25 @@ static int load_enclave(struct pal_enclave* enclave, char* args, size_t args_siz
     if (!is_wrfsbase_supported())
         return -EPERM;
 
-    /* Get host topology information only for the first process. This information will be
+    /* Get host information and topology only for the first process. This information will be
      * checkpointed and restored during forking of the child process(es). */
     if (parent_stream_fd < 0) {
         ret = get_topology_info(&topo_info);
         if (ret < 0)
             return ret;
+
+        if (extra_runtime_domain_names_conf) {
+            ret = parse_resolv_conf(&dns_conf);
+            if (ret < 0) {
+                log_error("Unable to parse host's /etc/resolv.conf");
+                return ret;
+            }
+            ret = get_hosts_hostname(dns_conf.hostname, sizeof(dns_conf.hostname));
+            if (ret < 0) {
+                log_error("Unable to get host's hostname");
+                return ret;
+            }
+        }
     }
 
     enclave->libpal_uri = alloc_concat(URI_PREFIX_FILE, URI_PREFIX_FILE_LEN, g_libpal_path, -1);
@@ -969,8 +1001,8 @@ static int load_enclave(struct pal_enclave* enclave, char* args, size_t args_siz
         return -ENOMEM;
 
     /* initialize TCB at the top of the alternative stack */
-    PAL_TCB_HOST* tcb = alt_stack + ALT_STACK_SIZE - sizeof(PAL_TCB_HOST);
-    pal_tcb_host_init(tcb, /*stack=*/NULL,
+    PAL_HOST_TCB* tcb = alt_stack + ALT_STACK_SIZE - sizeof(PAL_HOST_TCB);
+    pal_host_tcb_init(tcb, /*stack=*/NULL,
                       alt_stack); /* main thread uses the stack provided by Linux */
     ret = pal_thread_init(tcb);
     if (ret < 0)
@@ -990,7 +1022,7 @@ static int load_enclave(struct pal_enclave* enclave, char* args, size_t args_siz
 
     /* start running trusted PAL */
     ecall_enclave_start(enclave->libpal_uri, args, args_size, env, env_size, parent_stream_fd,
-                        &qe_targetinfo, &topo_info);
+                        &qe_targetinfo, &topo_info, &dns_conf);
 
     unmap_tcs();
     DO_SYSCALL(munmap, alt_stack, ALT_STACK_SIZE);
@@ -1012,7 +1044,7 @@ noreturn static void print_usage_and_exit(const char* argv_0) {
                "\tFirst process: %s <path to libpal.so> init <application> args...\n"
                "\tChildren:      %s <path to libpal.so> child <parent_stream_fd> args...",
                self, self);
-    log_always("This is an internal interface. Use pal_loader to launch applications in "
+    log_always("This is an internal interface. Use gramine-sgx wrapper to launch applications in "
                "Gramine.");
     DO_SYSCALL(exit_group, 1);
     die_or_inf_loop();
@@ -1126,6 +1158,11 @@ int main(int argc, char* argv[], char* envp[]) {
 
         /* We'll receive our argv and config via IPC. */
         parent_stream_fd = atoi(argv[3]);
+        ret = DO_SYSCALL(fcntl, parent_stream_fd, F_SETFD, FD_CLOEXEC);
+        if (ret < 0) {
+            return ret;
+        }
+
         ret = sgx_init_child_process(parent_stream_fd, &g_pal_enclave.application_path, &manifest);
         if (ret < 0)
             return ret;

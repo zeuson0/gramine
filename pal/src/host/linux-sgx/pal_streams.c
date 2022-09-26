@@ -49,7 +49,7 @@ static ssize_t handle_serialize(PAL_HANDLE handle, void** data) {
      * no handle type has more than one such field, and some have none */
     /* XXX: some of these have pointers inside, yet the content is not serialized. How does it even
      * work? Probably unused. Or pure luck. */
-    switch (PAL_GET_TYPE(handle)) {
+    switch (handle->hdr.type) {
         case PAL_TYPE_FILE:
             d   = handle->file.realpath;
             dsz = strlen(handle->file.realpath) + 1;
@@ -118,26 +118,38 @@ out:
 static int handle_deserialize(PAL_HANDLE* handle, const void* data, size_t size, int host_fd) {
     int ret;
 
-    PAL_HANDLE hdl = malloc(size);
+    size_t hdl_size = handle_size((PAL_HANDLE)data);
+    PAL_HANDLE hdl = malloc(hdl_size);
     if (!hdl)
         return -PAL_ERROR_NOMEM;
 
-    memcpy(hdl, data, size);
-    size_t hdlsz = handle_size(hdl);
+    memcpy(hdl, data, hdl_size);
 
-    /* update handle fields to point to correct contents (located right after handle itself) */
-    switch (PAL_GET_TYPE(hdl)) {
-        case PAL_TYPE_FILE:
-            hdl->file.realpath = hdl->file.realpath ? (const char*)hdl + hdlsz : NULL;
+    /* update handle fields to point to correct contents */
+    switch (hdl->hdr.type) {
+        case PAL_TYPE_FILE: {
+            assert(hdl_size < size);
+
+            size_t path_size = size - hdl_size;
+            char* path = malloc(path_size);
+            if (!path) {
+                free(hdl);
+                return -PAL_ERROR_NOMEM;
+            }
+
+            memcpy(path, (const char*)data + hdl_size, path_size);
+
+            hdl->file.realpath = path;
             hdl->file.chunk_hashes = NULL;
             break;
+        }
         case PAL_TYPE_PIPE:
         case PAL_TYPE_PIPECLI:
             /* session key is part of handle but need to deserialize SSL context */
             hdl->pipe.fd = host_fd; /* correct host FD must be passed to SSL context */
             ret = _PalStreamSecureInit(hdl, hdl->pipe.is_server, &hdl->pipe.session_key,
                                        (LIB_SSL_CONTEXT**)&hdl->pipe.ssl_ctx,
-                                       (const uint8_t*)hdl + hdlsz, size - hdlsz);
+                                       (const uint8_t*)data + hdl_size, size - hdl_size);
             if (ret < 0) {
                 free(hdl);
                 return -PAL_ERROR_DENIED;
@@ -147,9 +159,21 @@ static int handle_deserialize(PAL_HANDLE* handle, const void* data, size_t size,
             break;
         case PAL_TYPE_DEV:
             break;
-        case PAL_TYPE_DIR:
-            hdl->dir.realpath = hdl->dir.realpath ? (const char*)hdl + hdlsz : NULL;
+        case PAL_TYPE_DIR: {
+            assert(hdl_size < size);
+
+            size_t path_size = size - hdl_size;
+            char* path = malloc(path_size);
+            if (!path) {
+                free(hdl);
+                return -PAL_ERROR_NOMEM;
+            }
+
+            memcpy(path, (const char*)data + hdl_size, path_size);
+
+            hdl->dir.realpath = path;
             break;
+        }
         case PAL_TYPE_SOCKET:
             fixup_socket_handle_after_deserialization(hdl);
             break;
@@ -158,7 +182,7 @@ static int handle_deserialize(PAL_HANDLE* handle, const void* data, size_t size,
             hdl->process.stream = host_fd; /* correct host FD must be passed to SSL context */
             ret = _PalStreamSecureInit(hdl, hdl->process.is_server, &hdl->process.session_key,
                                        (LIB_SSL_CONTEXT**)&hdl->process.ssl_ctx,
-                                       (const uint8_t*)hdl + hdlsz, size - hdlsz);
+                                       (const uint8_t*)data + hdl_size, size - hdl_size);
             if (ret < 0) {
                 free(hdl);
                 return -PAL_ERROR_DENIED;
@@ -176,7 +200,7 @@ static int handle_deserialize(PAL_HANDLE* handle, const void* data, size_t size,
 }
 
 int _PalSendHandle(PAL_HANDLE target_process, PAL_HANDLE cargo) {
-    if (HANDLE_HDR(target_process)->type != PAL_TYPE_PROCESS)
+    if (target_process->hdr.type != PAL_TYPE_PROCESS)
         return -PAL_ERROR_BADHANDLE;
 
     /* serialize cargo handle into a blob hdl_data */
@@ -197,7 +221,7 @@ int _PalSendHandle(PAL_HANDLE target_process, PAL_HANDLE cargo) {
         .iov_base = &hdl_hdr,
         .iov_len = sizeof(struct hdl_header),
     };
-    ret = ocall_send(fd, &iov, 1, NULL, 0, NULL, 0);
+    ret = ocall_send(fd, &iov, 1, NULL, 0, NULL, 0, 0);
     if (ret < 0) {
         free(hdl_data);
         return unix_to_pal_error(ret);
@@ -221,7 +245,7 @@ int _PalSendHandle(PAL_HANDLE target_process, PAL_HANDLE cargo) {
     /* next send FD-to-transfer as ancillary data */
     iov.iov_base = (void*)DUMMYPAYLOAD;
     iov.iov_len = DUMMYPAYLOADSIZE;
-    ret = ocall_send(fd, &iov, 1, NULL, 0, control_hdr, control_hdr->cmsg_len);
+    ret = ocall_send(fd, &iov, 1, NULL, 0, control_hdr, control_hdr->cmsg_len, 0);
     if (ret < 0) {
         free(hdl_data);
         return unix_to_pal_error(ret);
@@ -242,7 +266,7 @@ int _PalSendHandle(PAL_HANDLE target_process, PAL_HANDLE cargo) {
 }
 
 int _PalReceiveHandle(PAL_HANDLE source_process, PAL_HANDLE* out_cargo) {
-    if (HANDLE_HDR(source_process)->type != PAL_TYPE_PROCESS)
+    if (source_process->hdr.type != PAL_TYPE_PROCESS)
         return -PAL_ERROR_BADHANDLE;
 
     ssize_t ret;
@@ -259,11 +283,6 @@ int _PalReceiveHandle(PAL_HANDLE source_process, PAL_HANDLE* out_cargo) {
         return unix_to_pal_error(ret);
 
     if ((size_t)ret != sizeof(hdl_hdr)) {
-        /* This check is to shield from a Iago attack. We know that ocall_send() in _PalSendHandle()
-         * transfers the message atomically, and that our ocall_recv() receives it atomically. So
-         * the only valid values for ret must be zero or the size of the header. */
-        if (!ret)
-            return -PAL_ERROR_TRYAGAIN;
         return -PAL_ERROR_DENIED;
     }
 
@@ -274,7 +293,7 @@ int _PalReceiveHandle(PAL_HANDLE source_process, PAL_HANDLE* out_cargo) {
     char dummypayload[DUMMYPAYLOADSIZE];
     iov.iov_base = dummypayload;
     iov.iov_len = sizeof(dummypayload);
-    ret = ocall_recv(fd, &iov, 1, NULL, NULL, control_buf, &control_buf_size, 0);
+    ret = ocall_recv(fd, &iov, 1, NULL, NULL, control_buf, &control_buf_size, MSG_CMSG_CLOEXEC);
     if (ret < 0)
         return unix_to_pal_error(ret);
     if (control_buf_size < sizeof(struct cmsghdr)) {
@@ -334,7 +353,7 @@ int _PalInitDebugStream(const char* path) {
             return unix_to_pal_error(ret);
     }
 
-    ret = ocall_open(path, O_WRONLY | O_APPEND | O_CREAT, PERM_rw_______);
+    ret = ocall_open(path, O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC, PERM_rw_______);
     if (ret < 0)
         return unix_to_pal_error(ret);
     g_log_fd = ret;

@@ -6,16 +6,15 @@ minimal server and client written against the mbedTLS library.
 The server and client are based on `ssl_server.c` and `ssl_client1.c` example
 programs shipped with mbedTLS. We modified them to allow using RA-TLS flows. In
 particular, the server uses a self-signed RA-TLS cert with the SGX quote
-embedded in it via `ra_tls_create_key_and_crt()`. The client uses an RA-TLS
+embedded in it via `ra_tls_create_key_and_crt_der()`. The client uses an RA-TLS
 verification callback to verify the server RA-TLS certificate via
-`ra_tls_verify_callback()`.
+`ra_tls_verify_callback_der()`.
 
 This example uses the RA-TLS libraries `ra_tls_attest.so` for server and
 `ra_tls_verify_epid.so`/ `ra_tls_verify_dcap.so` for client. These libraries are
 installed together with Gramine (for DCAP version, you need `meson setup ...
--Ddcap=enabled`). Additionally, mbedTLS libraries are required to correctly run
-RA-TLS, the client, and the server. For ECDSA/DCAP attestation, the DCAP
-software infrastructure must be installed and work correctly on the host.
+-Ddcap=enabled`). For DCAP attestation, the DCAP software infrastructure must be
+ installed and work correctly on the host.
 
 The current example works with both EPID (IAS) and ECDSA (DCAP) remote
 attestation schemes. For more documentation, refer to
@@ -47,8 +46,10 @@ verification.
 If client is run without additional command-line arguments, it uses default
 RA-TLS verification callback that compares `MRENCLAVE`, `MRSIGNER`,
 `ISV_PROD_ID` and `ISV_SVN` against the corresonding `RA_TLS_*` environment
-variables. To run the client with its own verification callback, execute it with
-four additional command-line arguments (see the source code for details).
+variables. `MRENCLAVE`, `MRSIGNER` and `ISV_PROD_ID` are expected to match
+`RA_TLS_*` ones. `ISV_SVN` is expected to be equal or greater than `RA_TLS_ISV_SVN`.
+To run the client with its own verification callback, execute it with four
+additional command-line arguments (see the source code for details).
 
 Also, because this example builds and uses debug SGX enclaves (`sgx.debug` is
 set to `true`), we use environment variable `RA_TLS_ALLOW_DEBUG_ENCLAVE_INSECURE=1`.

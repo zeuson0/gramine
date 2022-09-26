@@ -19,8 +19,8 @@
 
 static int register_file(const char* uri, const char* hash_str, bool check_duplicates);
 
-void* g_enclave_base;
-void* g_enclave_top;
+uintptr_t g_enclave_base;
+uintptr_t g_enclave_top;
 bool g_allowed_files_warn = false;
 
 /*
@@ -43,20 +43,26 @@ static_assert(sizeof(g_seal_key_flags_mask) + sizeof(g_seal_key_xfrm_mask) ==
                   sizeof(sgx_attributes_t), "wrong types");
 static_assert(sizeof(g_seal_key_misc_mask) == sizeof(sgx_misc_select_t), "wrong types");
 
-bool sgx_is_completely_within_enclave(const void* addr, size_t size) {
-    if ((uintptr_t)addr > UINTPTR_MAX - size) {
+bool sgx_is_completely_within_enclave(const void* _addr, size_t size) {
+    uintptr_t addr = (uintptr_t)_addr;
+    if (addr > UINTPTR_MAX - size) {
         return false;
     }
 
     return g_enclave_base <= addr && addr + size <= g_enclave_top;
 }
 
-bool sgx_is_completely_outside_enclave(const void* addr, size_t size) {
-    if ((uintptr_t)addr > UINTPTR_MAX - size) {
+bool sgx_is_valid_untrusted_ptr(const void* _addr, size_t size, size_t alignment) {
+    uintptr_t addr = (uintptr_t)_addr;
+    if (addr > UINTPTR_MAX - size) {
         return false;
     }
 
-    return g_enclave_base >= addr + size || g_enclave_top <= addr;
+    if (!(addr + size <= g_enclave_base || g_enclave_top <= addr)) {
+        return false;
+    }
+
+    return IS_ALIGNED(addr, alignment);
 }
 
 /*
@@ -71,21 +77,21 @@ bool sgx_is_completely_outside_enclave(const void* addr, size_t size) {
 
 #define UPDATE_USTACK(_ustack)                           \
     do {                                                 \
-        SET_ENCLAVE_TLS(ustack, _ustack);                \
-        GET_ENCLAVE_TLS(gpr)->ursp = (uint64_t)_ustack;  \
+        SET_ENCLAVE_TCB(ustack, _ustack);                \
+        GET_ENCLAVE_TCB(gpr)->ursp = (uint64_t)_ustack;  \
     } while(0)
 
 #else
 
-#define UPDATE_USTACK(_ustack) SET_ENCLAVE_TLS(ustack, _ustack)
+#define UPDATE_USTACK(_ustack) SET_ENCLAVE_TCB(ustack, _ustack)
 
 #endif
 
 void* sgx_prepare_ustack(void) {
-    void* old_ustack = GET_ENCLAVE_TLS(ustack);
+    void* old_ustack = GET_ENCLAVE_TCB(ustack);
 
     void* ustack = old_ustack;
-    if (ustack != GET_ENCLAVE_TLS(ustack_top))
+    if (ustack != GET_ENCLAVE_TCB(ustack_top))
         ustack -= RED_ZONE_SIZE;
     UPDATE_USTACK(ustack);
 
@@ -94,9 +100,9 @@ void* sgx_prepare_ustack(void) {
 
 void* sgx_alloc_on_ustack_aligned(size_t size, size_t alignment) {
     assert(IS_POWER_OF_2(alignment));
-    void* ustack = GET_ENCLAVE_TLS(ustack) - size;
+    void* ustack = GET_ENCLAVE_TCB(ustack) - size;
     ustack = ALIGN_DOWN_PTR_POW2(ustack, alignment);
-    if (!sgx_is_completely_outside_enclave(ustack, size)) {
+    if (!sgx_is_valid_untrusted_ptr(ustack, size, alignment)) {
         return NULL;
     }
     UPDATE_USTACK(ustack);
@@ -119,40 +125,79 @@ void* sgx_copy_to_ustack(const void* ptr, size_t size) {
 }
 
 void sgx_reset_ustack(const void* old_ustack) {
-    assert(old_ustack <= GET_ENCLAVE_TLS(ustack_top));
+    assert(old_ustack <= GET_ENCLAVE_TCB(ustack_top));
     UPDATE_USTACK(old_ustack);
 }
 
-bool sgx_copy_ptr_to_enclave(void** ptr, void* uptr, size_t size) {
-    assert(ptr);
-    if (!sgx_is_completely_outside_enclave(uptr, size)) {
-        *ptr = NULL;
-        return false;
+static void copy_u64s(void* dst, const void* untrusted_src, size_t count) {
+    assert((uintptr_t)untrusted_src % 8 == 0);
+    __asm__ volatile (
+        "rep movsq\n"
+        : "+D"(dst), "+S"(untrusted_src), "+c"(count)
+        :
+        : "memory", "cc"
+    );
+}
+
+void sgx_copy_to_enclave_verified(void* ptr, const void* uptr, size_t size) {
+    assert(sgx_is_valid_untrusted_ptr(uptr, size, /*alignment=*/1));
+    assert(sgx_is_completely_within_enclave(ptr, size));
+
+    if (size == 0) {
+        return;
     }
-    *ptr = uptr;
-    return true;
+
+    /*
+     * This should be simple `memcpy(ptr, uptr, size)`, but CVE-2022-21233 (INTEL-SA-00657).
+     * To mitigate this issue, all reads of untrusted memory from within the enclave must be done
+     * in 8-byte chunks aligned to 8-bytes boundary. Since x64 allocates memory in pages of
+     * (at least) 0x1000 in size, we can safely 8-align the pointer down and the size up.
+     */
+    size_t copy_len;
+    size_t prefix_misalignment = (uintptr_t)uptr & 7;
+    if (prefix_misalignment) {
+        /* Beginning of the copied range is misaligned. */
+        char prefix_val[8] = { 0 };
+        copy_u64s(prefix_val, (char*)uptr - prefix_misalignment, /*count=*/1);
+
+        copy_len = MIN(sizeof(prefix_val) - prefix_misalignment, size);
+        memcpy(ptr, prefix_val + prefix_misalignment, copy_len);
+        ptr = (char*)ptr + copy_len;
+        uptr = (const char*)uptr + copy_len;
+        size -= copy_len;
+
+        if (size == 0) {
+            return;
+        }
+    }
+    assert((uintptr_t)uptr % 8 == 0);
+
+    size_t suffix_misalignment = size & 7;
+    copy_len = size - suffix_misalignment;
+    assert(copy_len % 8 == 0);
+    copy_u64s(ptr, uptr, copy_len / 8);
+    ptr = (char*)ptr + copy_len;
+    uptr = (const char*)uptr + copy_len;
+    size -= copy_len;
+
+    assert(size == suffix_misalignment);
+    if (suffix_misalignment) {
+        /* End of the copied range is misaligned. */
+        char suffix_val[8] = { 0 };
+        copy_u64s(suffix_val, uptr, /*count=*/1);
+        memcpy(ptr, suffix_val, suffix_misalignment);
+    }
 }
 
 bool sgx_copy_to_enclave(void* ptr, size_t maxsize, const void* uptr, size_t usize) {
     if (usize > maxsize ||
-        !sgx_is_completely_outside_enclave(uptr, usize) ||
-        !sgx_is_completely_within_enclave(ptr, usize)) {
+        !sgx_is_valid_untrusted_ptr(uptr, usize, /*alignment=*/1) ||
+        !sgx_is_completely_within_enclave(ptr, maxsize)) {
         return false;
     }
-    memcpy(ptr, uptr, usize);
+
+    sgx_copy_to_enclave_verified(ptr, uptr, usize);
     return true;
-}
-
-void* sgx_import_to_enclave(const void* uptr, size_t usize) {
-    if (!sgx_is_completely_outside_enclave(uptr, usize))
-        return NULL;
-
-    void* buf = malloc(usize);
-    if (!buf)
-        return NULL;
-
-    memcpy(buf, uptr, usize);
-    return buf;
 }
 
 void* sgx_import_array_to_enclave(const void* uptr, size_t elem_size, size_t elem_cnt) {
@@ -160,7 +205,17 @@ void* sgx_import_array_to_enclave(const void* uptr, size_t elem_size, size_t ele
     if (__builtin_mul_overflow(elem_size, elem_cnt, &size))
         return NULL;
 
-    return sgx_import_to_enclave(uptr, size);
+    void* buf = malloc(size);
+    if (!buf) {
+        return NULL;
+    }
+
+    if (!sgx_copy_to_enclave(buf, size, uptr, size)) {
+        free(buf);
+        return NULL;
+    }
+
+    return buf;
 }
 
 void* sgx_import_array2d_to_enclave(const void* uptr, size_t elem_size, size_t elem_cnt1,
@@ -230,7 +285,7 @@ int sgx_verify_report(sgx_report_t* report) {
     log_debug("Verify report:");
     print_report(report);
 
-    if (memcmp(&check_mac, &report->mac, sizeof(check_mac))) {
+    if (!ct_memequal(&check_mac, &report->mac, sizeof(check_mac))) {
         log_error("Report verification failed");
         return -PAL_ERROR_DENIED;
     }
@@ -341,21 +396,7 @@ int load_trusted_or_allowed_file(struct trusted_file* tf, PAL_HANDLE file, bool 
 
     if (create) {
         assert(tf->allowed);
-
-        char* uri = malloc(URI_MAX);
-        if (!uri)
-            return -PAL_ERROR_NOMEM;
-
-        ret = _PalStreamGetName(file, uri, URI_MAX);
-        if (ret < 0) {
-            free(uri);
-            return ret;
-        }
-
-        ret = register_file(uri, /*hash_str=*/NULL, /*check_duplicates=*/true);
-
-        free(uri);
-        return ret;
+        return register_file(tf->uri, /*hash_str=*/NULL, /*check_duplicates=*/true);
     }
 
     if (tf->allowed) {
@@ -425,7 +466,8 @@ int load_trusted_or_allowed_file(struct trusted_file* tf, PAL_HANDLE file, bool 
             goto fail;
 
         /* to prevent TOCTOU attacks, copy file contents into the enclave before hashing */
-        memcpy(tmp_chunk, *out_umem + offset, chunk_size);
+        if (!sgx_copy_to_enclave(tmp_chunk, TRUSTED_CHUNK_SIZE, *out_umem + offset, chunk_size))
+            goto fail;
 
         ret = lib_SHA256Update(&file_sha, tmp_chunk, chunk_size);
         if (ret < 0)
@@ -436,6 +478,7 @@ int load_trusted_or_allowed_file(struct trusted_file* tf, PAL_HANDLE file, bool 
             goto fail;
 
         sgx_chunk_hash_t chunk_hash[2]; /* each chunk_hash is 128 bits in size */
+        static_assert(sizeof(chunk_hash) * 8 == 256, "");
         ret = lib_SHA256Final(&chunk_sha, (uint8_t*)&chunk_hash[0]);
         if (ret < 0)
             goto fail;
@@ -522,7 +565,9 @@ int copy_and_verify_trusted_file(const char* path, uint8_t* buf, const void* ume
         if (chunk_offset >= offset && chunk_end <= end) {
             /* if current chunk-to-copy completely resides in the requested region-to-copy,
              * directly copy into buf (without a scratch buffer) and hash in-place */
-            memcpy(buf_pos, umem + chunk_offset, chunk_size);
+            if (!sgx_copy_to_enclave(buf_pos, chunk_size, umem + chunk_offset, chunk_size)) {
+                goto failed;
+            }
 
             ret = lib_SHA256Update(&chunk_sha, buf_pos, chunk_size);
             if (ret < 0)
@@ -533,7 +578,9 @@ int copy_and_verify_trusted_file(const char* path, uint8_t* buf, const void* ume
             /* if current chunk-to-copy only partially overlaps with the requested region-to-copy,
              * read the file contents into a scratch buffer, verify hash and then copy only the part
              * needed by the caller */
-            memcpy(tmp_chunk, umem + chunk_offset, chunk_size);
+            if (!sgx_copy_to_enclave(tmp_chunk, chunk_size, umem + chunk_offset, chunk_size)) {
+                goto failed;
+            }
 
             ret = lib_SHA256Update(&chunk_sha, tmp_chunk, chunk_size);
             if (ret < 0)
@@ -953,7 +1000,7 @@ int _PalStreamKeyExchange(PAL_HANDLE stream, PAL_SESSION_KEY* out_key,
     size_t secret_size;
     uint8_t secret[DH_SIZE];
 
-    assert(HANDLE_HDR(stream)->type == PAL_TYPE_PROCESS);
+    assert(stream->hdr.type == PAL_TYPE_PROCESS);
 
     /* perform unauthenticated DH key exchange to produce two collaterals: the session key K_e and
      * the assymetric SHA256 hashes over K_e (for later use in SGX report's reportdata) */
@@ -966,7 +1013,7 @@ int _PalStreamKeyExchange(PAL_HANDLE stream, PAL_SESSION_KEY* out_key,
         goto out;
 
     for (int64_t bytes = 0, total = 0; total < (int64_t)sizeof(my_public); total += bytes) {
-        bytes = _PalStreamWrite(stream, 0, sizeof(my_public) - total, my_public + total, NULL, 0);
+        bytes = _PalStreamWrite(stream, 0, sizeof(my_public) - total, my_public + total);
         if (bytes < 0) {
             if (bytes == -PAL_ERROR_INTERRUPTED || bytes == -PAL_ERROR_TRYAGAIN) {
                 bytes = 0;
@@ -978,8 +1025,7 @@ int _PalStreamKeyExchange(PAL_HANDLE stream, PAL_SESSION_KEY* out_key,
     }
 
     for (int64_t bytes = 0, total = 0; total < (int64_t)sizeof(peer_public); total += bytes) {
-        bytes = _PalStreamRead(stream, 0, sizeof(peer_public) - total, peer_public + total, NULL,
-                               0);
+        bytes = _PalStreamRead(stream, 0, sizeof(peer_public) - total, peer_public + total);
         if (bytes < 0) {
             if (bytes == -PAL_ERROR_INTERRUPTED || bytes == -PAL_ERROR_TRYAGAIN) {
                 bytes = 0;
@@ -1047,7 +1093,7 @@ int _PalStreamReportRequest(PAL_HANDLE stream, sgx_report_data_t* my_report_data
     uint64_t bytes;
     int64_t ret;
 
-    assert(HANDLE_HDR(stream)->type == PAL_TYPE_PROCESS);
+    assert(stream->hdr.type == PAL_TYPE_PROCESS);
 
     /* A -> B: targetinfo[A] */
     memset(&target_info, 0, sizeof(target_info));
@@ -1058,7 +1104,7 @@ int _PalStreamReportRequest(PAL_HANDLE stream, sgx_report_data_t* my_report_data
 
     for (bytes = 0, ret = 0; bytes < SGX_TARGETINFO_FILLED_SIZE; bytes += ret) {
         ret = _PalStreamWrite(stream, 0, SGX_TARGETINFO_FILLED_SIZE - bytes,
-                              ((void*)&target_info) + bytes, NULL, 0);
+                              ((void*)&target_info) + bytes);
         if (ret < 0) {
             if (ret == -PAL_ERROR_INTERRUPTED || ret == -PAL_ERROR_TRYAGAIN) {
                 ret = 0;
@@ -1071,7 +1117,7 @@ int _PalStreamReportRequest(PAL_HANDLE stream, sgx_report_data_t* my_report_data
 
     /* B -> A: report[B -> A] */
     for (bytes = 0, ret = 0; bytes < sizeof(report); bytes += ret) {
-        ret = _PalStreamRead(stream, 0, sizeof(report) - bytes, ((void*)&report) + bytes, NULL, 0);
+        ret = _PalStreamRead(stream, 0, sizeof(report) - bytes, ((void*)&report) + bytes);
         if (ret < 0) {
             if (ret == -PAL_ERROR_INTERRUPTED || ret == -PAL_ERROR_TRYAGAIN) {
                 ret = 0;
@@ -1110,7 +1156,7 @@ int _PalStreamReportRequest(PAL_HANDLE stream, sgx_report_data_t* my_report_data
     }
 
     for (bytes = 0, ret = 0; bytes < sizeof(report); bytes += ret) {
-        ret = _PalStreamWrite(stream, 0, sizeof(report) - bytes, ((void*)&report) + bytes, NULL, 0);
+        ret = _PalStreamWrite(stream, 0, sizeof(report) - bytes, ((void*)&report) + bytes);
         if (ret < 0) {
             if (ret == -PAL_ERROR_INTERRUPTED || ret == -PAL_ERROR_TRYAGAIN) {
                 ret = 0;
@@ -1141,14 +1187,14 @@ int _PalStreamReportRespond(PAL_HANDLE stream, sgx_report_data_t* my_report_data
     uint64_t bytes;
     int64_t ret;
 
-    assert(HANDLE_HDR(stream)->type == PAL_TYPE_PROCESS);
+    assert(stream->hdr.type == PAL_TYPE_PROCESS);
 
     memset(&target_info, 0, sizeof(target_info));
 
     /* A -> B: targetinfo[A] */
     for (bytes = 0, ret = 0; bytes < SGX_TARGETINFO_FILLED_SIZE; bytes += ret) {
         ret = _PalStreamRead(stream, 0, SGX_TARGETINFO_FILLED_SIZE - bytes,
-                             ((void*)&target_info) + bytes, NULL, 0);
+                             ((void*)&target_info) + bytes);
         if (ret < 0) {
             if (ret == -PAL_ERROR_INTERRUPTED || ret == -PAL_ERROR_TRYAGAIN) {
                 ret = 0;
@@ -1167,7 +1213,7 @@ int _PalStreamReportRespond(PAL_HANDLE stream, sgx_report_data_t* my_report_data
     }
 
     for (bytes = 0, ret = 0; bytes < sizeof(report); bytes += ret) {
-        ret = _PalStreamWrite(stream, 0, sizeof(report) - bytes, ((void*)&report) + bytes, NULL, 0);
+        ret = _PalStreamWrite(stream, 0, sizeof(report) - bytes, ((void*)&report) + bytes);
         if (ret < 0) {
             if (ret == -PAL_ERROR_INTERRUPTED || ret == -PAL_ERROR_TRYAGAIN) {
                 ret = 0;
@@ -1180,7 +1226,7 @@ int _PalStreamReportRespond(PAL_HANDLE stream, sgx_report_data_t* my_report_data
 
     /* A -> B: report[A -> B] */
     for (bytes = 0, ret = 0; bytes < sizeof(report); bytes += ret) {
-        ret = _PalStreamRead(stream, 0, sizeof(report) - bytes, ((void*)&report) + bytes, NULL, 0);
+        ret = _PalStreamRead(stream, 0, sizeof(report) - bytes, ((void*)&report) + bytes);
         if (ret < 0) {
             if (ret == -PAL_ERROR_INTERRUPTED || ret == -PAL_ERROR_TRYAGAIN) {
                 ret = 0;
@@ -1219,9 +1265,9 @@ int _PalStreamSecureInit(PAL_HANDLE stream, bool is_server, PAL_SESSION_KEY* ses
                          size_t buf_size) {
     int stream_fd;
 
-    if (HANDLE_HDR(stream)->type == PAL_TYPE_PROCESS)
+    if (stream->hdr.type == PAL_TYPE_PROCESS)
         stream_fd = stream->process.stream;
-    else if (HANDLE_HDR(stream)->type == PAL_TYPE_PIPE || HANDLE_HDR(stream)->type == PAL_TYPE_PIPECLI)
+    else if (stream->hdr.type == PAL_TYPE_PIPE || stream->hdr.type == PAL_TYPE_PIPECLI)
         stream_fd = stream->pipe.fd;
     else
         return -PAL_ERROR_BADHANDLE;

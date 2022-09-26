@@ -158,7 +158,7 @@ struct parser_table {
     [__NR_shutdown] = {.slow = false, .name = "shutdown", .parser = {parse_long_arg,
                        parse_integer_arg, parse_integer_arg}},
     [__NR_bind] = {.slow = false, .name = "bind", .parser = {parse_long_arg, parse_integer_arg,
-                   parse_pointer_arg, parse_integer_arg}},
+                   parse_sockaddr, parse_integer_arg}},
     [__NR_listen] = {.slow = false, .name = "listen", .parser = {parse_long_arg, parse_integer_arg,
                      parse_integer_arg}},
     [__NR_getsockname] = {.slow = false, .name = "getsockname", .parser = {parse_long_arg,
@@ -578,6 +578,29 @@ struct parser_table {
     [__NR_io_uring_setup] = {.slow = false, .name = "io_uring_setup", .parser = {NULL}},
     [__NR_io_uring_enter] = {.slow = false, .name = "io_uring_enter", .parser = {NULL}},
     [__NR_io_uring_register] = {.slow = false, .name = "io_uring_register", .parser = {NULL}},
+    [__NR_open_tree] = {.slow = false, .name = "open_tree", .parser = {NULL}},
+    [__NR_move_mount] = {.slow = false, .name = "move_mount", .parser = {NULL}},
+    [__NR_fsopen] = {.slow = false, .name = "fsopen", .parser = {NULL}},
+    [__NR_fsconfig] = {.slow = false, .name = "fsconfig", .parser = {NULL}},
+    [__NR_fsmount] = {.slow = false, .name = "fsmount", .parser = {NULL}},
+    [__NR_fspick] = {.slow = false, .name = "fspick", .parser = {NULL}},
+    [__NR_pidfd_open] = {.slow = false, .name = "pidfd_open", .parser = {NULL}},
+    [__NR_clone3] = {.slow = false, .name = "clone3", .parser = {NULL}},
+    [__NR_close_range] = {.slow = false, .name = "close_range", .parser = {NULL}},
+    [__NR_openat2] = {.slow = false, .name = "openat2", .parser = {NULL}},
+    [__NR_pidfd_getfd] = {.slow = false, .name = "pidfd_getfd", .parser = {NULL}},
+    [__NR_faccessat2] = {.slow = false, .name = "faccessat2", .parser = {NULL}},
+    [__NR_process_madvise] = {.slow = false, .name = "process_madvise", .parser = {NULL}},
+    [__NR_epoll_pwait2] = {.slow = false, .name = "epoll_pwait2", .parser = {NULL}},
+    [__NR_mount_setattr] = {.slow = false, .name = "mount_setattr", .parser = {NULL}},
+    [__NR_quotactl_fd] = {.slow = false, .name = "quotactl_fd", .parser = {NULL}},
+    [__NR_landlock_create_ruleset] = {.slow = false, .name = "landlock_create_ruleset", .parser = {NULL}},
+    [__NR_landlock_add_rule] = {.slow = false, .name = "landlock_add_rule", .parser = {NULL}},
+    [__NR_landlock_restrict_self] = {.slow = false, .name = "landlock_restrict_self", .parser = {NULL}},
+    [__NR_memfd_secret] = {.slow = false, .name = "memfd_secret", .parser = {NULL}},
+    [__NR_process_mrelease] = {.slow = false, .name = "process_mrelease", .parser = {NULL}},
+    [__NR_futex_waitv] = {.slow = false, .name = "futex_waitv", .parser = {NULL}},
+    [__NR_set_mempolicy_home_node] = {.slow = false, .name = "set_mempolicy_home_node", .parser = {NULL}},
 };
 
 const char* const siglist[SIGRTMIN] = {
@@ -1107,19 +1130,18 @@ static void parse_sockaddr(struct print_buf* buf, va_list* ap) {
         case AF_INET: {
             struct sockaddr_in* a = (void*)addr;
             unsigned char* ip     = (void*)&a->sin_addr.s_addr;
-            buf_printf(buf, "{family=INET,ip=%u.%u.%u.%u,port=htons(%u)}", ip[0], ip[1], ip[2], ip[3],
-                   __ntohs(a->sin_port));
+            buf_printf(buf, "{family=IPv4,ip=%u.%u.%u.%u,port=%u}", ip[0], ip[1], ip[2], ip[3],
+                       __ntohs(a->sin_port));
             break;
         }
 
         case AF_INET6: {
             struct sockaddr_in6* a = (void*)addr;
             unsigned short* ip     = (void*)&a->sin6_addr.s6_addr;
-            buf_printf(buf,
-                "{family=INET,ip=[%x:%x:%x:%x:%x:%x:%x:%x],"
-                "port=htons(%u)}",
-                __ntohs(ip[0]), __ntohs(ip[1]), __ntohs(ip[2]), __ntohs(ip[3]), __ntohs(ip[4]),
-                __ntohs(ip[5]), __ntohs(ip[6]), __ntohs(ip[7]), __ntohs(a->sin6_port));
+            buf_printf(buf, "{family=IPv6,ip=[%x:%x:%x:%x:%x:%x:%x:%x],port=%u}",
+                       __ntohs(ip[0]), __ntohs(ip[1]), __ntohs(ip[2]), __ntohs(ip[3]),
+                       __ntohs(ip[4]), __ntohs(ip[5]), __ntohs(ip[6]), __ntohs(ip[7]),
+                       __ntohs(a->sin6_port));
             break;
         }
 

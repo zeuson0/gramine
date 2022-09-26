@@ -228,6 +228,8 @@ typedef struct {
     int options;
     struct sockaddr* ms_addr;
     size_t ms_addrlen;
+    struct sockaddr* ms_local_addr;
+    size_t ms_local_addrlen;
 } ms_ocall_accept_t;
 
 typedef struct {
@@ -266,6 +268,7 @@ typedef struct {
     size_t ms_addrlen;
     void* ms_control;
     size_t ms_controllen;
+    unsigned int ms_flags;
 } ms_ocall_send_t;
 
 typedef struct {

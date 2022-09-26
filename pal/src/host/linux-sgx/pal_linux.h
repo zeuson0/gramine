@@ -25,7 +25,7 @@
 #include "pal_internal.h"
 #include "pal_linux_defs.h"
 #include "pal_linux_types.h"
-#include "pal_tls.h"
+#include "pal_tcb.h"
 #include "sgx_arch.h"
 #include "sgx_attest.h"
 
@@ -65,16 +65,13 @@ int init_child_process(int parent_stream_fd, PAL_HANDLE* out_parent, uint64_t* o
 
 #ifdef IN_ENCLAVE
 
-int init_enclave(void);
-void init_untrusted_slab_mgr(void);
-
 extern const size_t g_page_size;
 extern size_t g_pal_internal_mem_size;
 
-noreturn void pal_linux_main(char* uptr_libpal_uri, size_t libpal_uri_len, char* uptr_args,
-                             size_t args_size, char* uptr_env, size_t env_size,
-                             int parent_stream_fd, sgx_target_info_t* uptr_qe_targetinfo,
-                             struct pal_topo_info* uptr_topo_info);
+noreturn void pal_linux_main(void* uptr_libpal_uri, size_t libpal_uri_len, void* uptr_args,
+                             size_t args_size, void* uptr_env, size_t env_size,
+                             int parent_stream_fd, void* uptr_qe_targetinfo, void* uptr_topo_info,
+                             void* uptr_rpc_queue, void* uptr_dns_conf);
 void pal_start_thread(void);
 
 extern char __text_start, __text_end, __data_start, __data_end;
@@ -110,7 +107,6 @@ void init_tsc(void);
 int init_cpuid(void);
 
 int init_enclave(void);
-void init_untrusted_slab_mgr(void);
 
 /* master key for all enclaves of one application, populated by the first enclave and inherited by
  * all other enclaves (children, their children, etc.); used as master key in pipes' encryption */
@@ -125,39 +121,42 @@ int sgx_verify_report(sgx_report_t* report);
 /*!
  * \brief Obtain a CPU-signed report for local attestation.
  *
- * Caller must align all parameters to 512 bytes (cf. `__sgx_mem_aligned`).
- *
- * \param[in]  target_info  Information on the target enclave.
- * \param[in]  data         User-specified data to be included in the report.
+ * \param      target_info  Information on the target enclave.
+ * \param      data         User-specified data to be included in the report.
  * \param[out] report       Output buffer to store the report.
- * \return                  0 on success, negative error code otherwise.
+ *
+ * \returns 0 on success, negative error code otherwise.
+ *
+ * Caller must align all parameters to 512 bytes (cf. `__sgx_mem_aligned`).
  */
 int sgx_get_report(const sgx_target_info_t* target_info, const sgx_report_data_t* data,
                    sgx_report_t* report);
 
 /*!
  * \brief Obtain an enclave/signer-bound key via EGETKEY(SGX_SEAL_KEY) for secret migration/sealing
- * of files.
+ *        of files.
  *
- * \param[in]  key_policy  Must be SGX_KEYPOLICY_MRENCLAVE or SGX_KEYPOLICY_MRSIGNER. Binds the
+ * \param      key_policy  Must be SGX_KEYPOLICY_MRENCLAVE or SGX_KEYPOLICY_MRSIGNER. Binds the
  *                         sealing key to MRENCLAVE (only the same enclave can unseal secrets) or
  *                         to MRSIGNER (all enclaves from the same signer can unseal secrets).
  * \param[out] seal_key    Output buffer to store the sealing key.
- * \return 0 on success, negative error code otherwise.
+ *
+ * \returns 0 on success, negative error code otherwise.
  */
 int sgx_get_seal_key(uint16_t key_policy, sgx_key_128bit_t* seal_key);
 
 /*!
  * \brief Verify the peer enclave during SGX local attestation.
  *
+ * \param peer_enclave_info  SGX information of the peer enclave.
+ * \param expected_data      Expected SGX report data, contains SHA256(K_e || tag1); see also
+ *                           top-level comment in pal_process.c.
+ *
+ * \returns 0 on success, negative error code otherwise.
+ *
  * Verifies that the SGX information of the peer enclave is the same as ours (all Gramine enclaves
  * with the same configuration have the same SGX enclave info), and that the signer of the SGX
  * report is the owner of the newly established session key.
- *
- * \param  peer_enclave_info  SGX information of the peer enclave.
- * \param  expected_data      Expected SGX report data, contains SHA256(K_e || tag1); see
- *                            also top-level comment in pal_process.c.
- * \return 0 on success, negative error code otherwise.
  */
 bool is_peer_enclave_ok(sgx_report_body_t* peer_enclave_info,
                         sgx_report_data_t* expected_data);
@@ -172,10 +171,11 @@ int _PalStreamKeyExchange(PAL_HANDLE stream, PAL_SESSION_KEY* out_key,
 /*!
  * \brief Request a local report on an RPC stream (typically called by parent enclave).
  *
- * \param  stream           Stream handle for sending and receiving messages.
- * \param  my_report_data   User-defined data to embed into outgoing SGX report.
- * \param  peer_report_data User-defined data expected in the incoming SGX report.
- * \return 0 on success, negative error code otherwise.
+ * \param stream            Stream handle for sending and receiving messages.
+ * \param my_report_data    User-defined data to embed into outgoing SGX report.
+ * \param peer_report_data  User-defined data expected in the incoming SGX report.
+ *
+ * \returns 0 on success, negative error code otherwise.
  */
 int _PalStreamReportRequest(PAL_HANDLE stream, sgx_report_data_t* my_report_data,
                             sgx_report_data_t* peer_report_data);
@@ -183,10 +183,11 @@ int _PalStreamReportRequest(PAL_HANDLE stream, sgx_report_data_t* my_report_data
 /*!
  * \brief Respond with a local report on an RPC stream (typically called by child enclave).
  *
- * \param  stream           Stream handle for sending and receiving messages.
- * \param  my_report_data   User-defined data to embed into outgoing SGX report.
- * \param  peer_report_data User-defined data expected in the incoming SGX report.
- * \return 0 on success, negative error code otherwise.
+ * \param stream            Stream handle for sending and receiving messages.
+ * \param my_report_data    User-defined data to embed into outgoing SGX report.
+ * \param peer_report_data  User-defined data expected in the incoming SGX report.
+ *
+ * \returns 0 on success, negative error code otherwise.
  */
 int _PalStreamReportRespond(PAL_HANDLE stream, sgx_report_data_t* my_report_data,
                             sgx_report_data_t* peer_report_data);

@@ -18,8 +18,6 @@
  *        values and report success instead of injecting -EINTR).
  */
 
-#include "enclave_ocalls.h"
-
 #include <asm/errno.h>
 #include <linux/futex.h>
 #include <stdalign.h>
@@ -29,6 +27,7 @@
 #include "api.h"
 #include "asan.h"
 #include "cpu.h"
+#include "enclave_ocalls.h"
 #include "pal_internal.h"
 #include "pal_ocall_types.h"
 #include "pal_rpc_queue.h"
@@ -44,7 +43,7 @@
 
 /* global pointer to a single untrusted queue, all accesses must be protected by g_rpc_queue->lock
  */
-rpc_queue_t* g_rpc_queue;
+rpc_queue_t* g_rpc_queue = NULL;
 
 static long sgx_exitless_ocall(uint64_t code, void* ms) {
     /* perform OCALL with enclave exit if no RPC queue (i.e., no exitless); no need for atomics
@@ -135,7 +134,7 @@ static long sgx_exitless_ocall(uint64_t code, void* ms) {
     }
 
     sgx_reset_ustack(old_ustack);
-    return READ_ONCE(req->result);
+    return COPY_UNTRUSTED_VALUE(&req->result);
 }
 
 __attribute_no_sanitize_address
@@ -154,11 +153,11 @@ noreturn void ocall_exit(int exitcode, int is_exitgroup) {
 
 #ifdef ASAN
     /* Unpoison the stacks allocated for this thread. They can be later used for a new thread. */
-    uintptr_t initial_stack_addr = GET_ENCLAVE_TLS(initial_stack_addr);
+    uintptr_t initial_stack_addr = GET_ENCLAVE_TCB(initial_stack_addr);
     asan_unpoison_region(initial_stack_addr - ENCLAVE_STACK_SIZE, ENCLAVE_STACK_SIZE);
 
-    uintptr_t sig_stack_low = GET_ENCLAVE_TLS(sig_stack_low);
-    uintptr_t sig_stack_high = GET_ENCLAVE_TLS(sig_stack_high);
+    uintptr_t sig_stack_low = GET_ENCLAVE_TCB(sig_stack_low);
+    uintptr_t sig_stack_high = GET_ENCLAVE_TCB(sig_stack_high);
     asan_unpoison_region(sig_stack_low, sig_stack_high - sig_stack_low);
 #endif
 
@@ -191,8 +190,7 @@ int ocall_mmap_untrusted(void** addrptr, size_t size, int prot, int flags, int f
     void* requested_addr = *addrptr;
 
     if (flags & MAP_FIXED) {
-        if (!sgx_is_completely_outside_enclave(requested_addr, size) ||
-                !IS_ALLOC_ALIGNED_PTR(requested_addr)) {
+        if (!sgx_is_valid_untrusted_ptr(requested_addr, size, PAGE_SIZE)) {
             sgx_reset_ustack(old_ustack);
             return -EINVAL;
         }
@@ -220,7 +218,7 @@ int ocall_mmap_untrusted(void** addrptr, size_t size, int prot, int flags, int f
         return retval;
     }
 
-    void* returned_addr = READ_ONCE(ms->ms_addr);
+    void* returned_addr = COPY_UNTRUSTED_VALUE(&ms->ms_addr);
     if (flags & MAP_FIXED) {
         /* addrptr already contains the mmap'ed address, no need to update it */
         if (returned_addr != requested_addr) {
@@ -229,10 +227,11 @@ int ocall_mmap_untrusted(void** addrptr, size_t size, int prot, int flags, int f
         }
     } else {
         /* update addrptr with the mmap'ed address */
-        if (!sgx_copy_ptr_to_enclave(addrptr, returned_addr, size)) {
+        if (!sgx_is_valid_untrusted_ptr(returned_addr, size, PAGE_SIZE)) {
             sgx_reset_ustack(old_ustack);
             return -EPERM;
         }
+        *addrptr = returned_addr;
     }
 
     sgx_reset_ustack(old_ustack);
@@ -243,7 +242,7 @@ int ocall_munmap_untrusted(const void* addr, size_t size) {
     int retval = 0;
     ms_ocall_munmap_untrusted_t* ms;
 
-    if (!sgx_is_completely_outside_enclave(addr, size) || !IS_ALLOC_ALIGNED_PTR(addr))
+    if (!sgx_is_valid_untrusted_ptr(addr, size, PAGE_SIZE))
         return -EINVAL;
 
     void* old_ustack = sgx_prepare_ustack();
@@ -286,7 +285,7 @@ static int ocall_mmap_untrusted_cache(size_t size, void** addrptr, bool* need_mu
     *addrptr = NULL;
     *need_munmap = false;
 
-    struct untrusted_area* cache = &get_tcb_trts()->untrusted_area_cache;
+    struct untrusted_area* cache = &pal_get_enclave_tcb()->untrusted_area_cache;
 
     uint64_t in_use = 0;
     if (!__atomic_compare_exchange_n(&cache->in_use, &in_use, 1, /*weak=*/false, __ATOMIC_RELAXED,
@@ -300,6 +299,7 @@ static int ocall_mmap_untrusted_cache(size_t size, void** addrptr, bool* need_mu
         *need_munmap = true;
         return 0;
     }
+    COMPILER_BARRIER();
 
     /* normal execution case: cache was not in use, so use it/allocate new one for reuse */
     if (cache->valid) {
@@ -310,6 +310,7 @@ static int ocall_mmap_untrusted_cache(size_t size, void** addrptr, bool* need_mu
         ret = ocall_munmap_untrusted(cache->addr, cache->size);
         if (ret < 0) {
             cache->valid = false;
+            COMPILER_BARRIER();
             __atomic_store_n(&cache->in_use, 0, __ATOMIC_RELAXED);
             return ret;
         }
@@ -319,6 +320,7 @@ static int ocall_mmap_untrusted_cache(size_t size, void** addrptr, bool* need_mu
                                /*fd=*/-1, /*offset=*/0);
     if (ret < 0) {
         cache->valid = false;
+        COMPILER_BARRIER();
         __atomic_store_n(&cache->in_use, 0, __ATOMIC_RELAXED);
     } else {
         cache->valid = true;
@@ -333,7 +335,7 @@ static void ocall_munmap_untrusted_cache(void* addr, size_t size, bool need_munm
         ocall_munmap_untrusted(addr, size);
         /* there is not much we can do in case of error */
     } else {
-        struct untrusted_area* cache = &get_tcb_trts()->untrusted_area_cache;
+        struct untrusted_area* cache = &pal_get_enclave_tcb()->untrusted_area_cache;
         __atomic_store_n(&cache->in_use, 0, __ATOMIC_RELAXED);
     }
 }
@@ -363,10 +365,10 @@ int ocall_cpuid(unsigned int leaf, unsigned int subleaf, unsigned int values[4])
     }
 
     if (!retval) {
-        values[0] = READ_ONCE(ms->ms_values[0]);
-        values[1] = READ_ONCE(ms->ms_values[1]);
-        values[2] = READ_ONCE(ms->ms_values[2]);
-        values[3] = READ_ONCE(ms->ms_values[3]);
+        values[0] = COPY_UNTRUSTED_VALUE(&ms->ms_values[0]);
+        values[1] = COPY_UNTRUSTED_VALUE(&ms->ms_values[1]);
+        values[2] = COPY_UNTRUSTED_VALUE(&ms->ms_values[2]);
+        values[3] = COPY_UNTRUSTED_VALUE(&ms->ms_values[3]);
     }
 
     sgx_reset_ustack(old_ustack);
@@ -483,7 +485,7 @@ ssize_t ocall_read(int fd, void* buf, size_t count) {
             retval = -EPERM;
             goto out;
         }
-        if (!sgx_copy_to_enclave(buf, count, READ_ONCE(ms->ms_buf), retval)) {
+        if (!sgx_copy_to_enclave(buf, count, ms_buf, retval)) {
             retval = -EPERM;
             goto out;
         }
@@ -505,7 +507,7 @@ ssize_t ocall_write(int fd, const void* buf, size_t count) {
 
     void* old_ustack = sgx_prepare_ustack();
 
-    if (sgx_is_completely_outside_enclave(buf, count)) {
+    if (sgx_is_valid_untrusted_ptr(buf, count, /*alignment=*/1)) {
         /* buf is in untrusted memory (e.g., allowed file mmaped in untrusted memory) */
         ms_buf = buf;
     } else if (sgx_is_completely_within_enclave(buf, count)) {
@@ -608,7 +610,7 @@ ssize_t ocall_pread(int fd, void* buf, size_t count, off_t offset) {
             retval = -EPERM;
             goto out;
         }
-        if (!sgx_copy_to_enclave(buf, count, READ_ONCE(ms->ms_buf), retval)) {
+        if (!sgx_copy_to_enclave(buf, count, ms_buf, retval)) {
             retval = -EPERM;
         }
     }
@@ -629,7 +631,7 @@ ssize_t ocall_pwrite(int fd, const void* buf, size_t count, off_t offset) {
 
     void* old_ustack = sgx_prepare_ustack();
 
-    if (sgx_is_completely_outside_enclave(buf, count)) {
+    if (sgx_is_valid_untrusted_ptr(buf, count, /*alignment=*/1)) {
         /* buf is in untrusted memory (e.g., allowed file mmaped in untrusted memory) */
         ms_buf = buf;
     } else if (sgx_is_completely_within_enclave(buf, count)) {
@@ -711,7 +713,10 @@ int ocall_fstat(int fd, struct stat* buf) {
     }
 
     if (!retval) {
-        memcpy(buf, &ms->ms_stat, sizeof(struct stat));
+        if (!sgx_copy_to_enclave(buf, sizeof(*buf), &ms->ms_stat, sizeof(struct stat))) {
+            retval = -EPERM;
+        }
+        /* TODO: sanitize `buf`, e.g. that `buf->st_size >= 0` */
     }
 
     sgx_reset_ustack(old_ustack);
@@ -921,7 +926,7 @@ int ocall_getdents(int fd, struct linux_dirent64* dirp, size_t dirp_size) {
             retval = -EPERM;
             goto out;
         }
-        if (!sgx_copy_to_enclave(dirp, dirp_size, READ_ONCE(ms->ms_dirp), size)) {
+        if (!sgx_copy_to_enclave(dirp, dirp_size, untrusted_dirp, size)) {
             retval = -EPERM;
             goto out;
         }
@@ -1019,7 +1024,7 @@ int ocall_create_process(size_t nargs, const char** args, int* stream_fd) {
 
     if (!retval) {
         if (stream_fd)
-            *stream_fd = READ_ONCE(ms->ms_stream_fd);
+            *stream_fd = COPY_UNTRUSTED_VALUE(&ms->ms_stream_fd);
     }
 
     sgx_reset_ustack(old_ustack);
@@ -1030,7 +1035,7 @@ int ocall_futex(uint32_t* futex, int op, int val, uint64_t* timeout_us) {
     int retval = 0;
     ms_ocall_futex_t* ms;
 
-    if (!sgx_is_completely_outside_enclave(futex, sizeof(uint32_t))) {
+    if (!sgx_is_valid_untrusted_ptr(futex, sizeof(*futex), alignof(__typeof__(*futex)))) {
         return -EINVAL;
     }
 
@@ -1067,7 +1072,7 @@ int ocall_futex(uint32_t* futex, int op, int val, uint64_t* timeout_us) {
     }
 
     if (timeout_us) {
-        uint64_t remaining_time_us = READ_ONCE(ms->ms_timeout_us);
+        uint64_t remaining_time_us = COPY_UNTRUSTED_VALUE(&ms->ms_timeout_us);
         if (retval == -ETIMEDOUT) {
             remaining_time_us = 0;
         }
@@ -1140,7 +1145,7 @@ int ocall_bind(int fd, struct sockaddr_storage* addr, size_t addrlen, uint16_t* 
         goto out;
     }
 
-    uint16_t new_port = READ_ONCE(ms->ms_new_port);
+    uint16_t new_port = COPY_UNTRUSTED_VALUE(&ms->ms_new_port);
     if (new_port == 0) {
         ret = -EPERM;
         goto out;
@@ -1218,8 +1223,8 @@ int ocall_listen(int domain, int type, int protocol, int ipv6_v6only, struct soc
 
     if (retval >= 0) {
         if (addr && len) {
-            size_t untrusted_addrlen = READ_ONCE(ms->ms_addrlen);
-            if (!sgx_copy_to_enclave(addr, len, READ_ONCE(ms->ms_addr), untrusted_addrlen)) {
+            size_t untrusted_addrlen = COPY_UNTRUSTED_VALUE(&ms->ms_addrlen);
+            if (!sgx_copy_to_enclave(addr, len, untrusted_addr, untrusted_addrlen)) {
                 sgx_reset_ustack(old_ustack);
                 return -EPERM;
             }
@@ -1231,9 +1236,11 @@ int ocall_listen(int domain, int type, int protocol, int ipv6_v6only, struct soc
     return retval;
 }
 
-int ocall_accept(int sockfd, struct sockaddr* addr, size_t* addrlen, int options) {
+int ocall_accept(int sockfd, struct sockaddr* addr, size_t* addrlen, struct sockaddr* local_addr,
+                 size_t* local_addrlen, int options) {
     int retval = 0;
     size_t len = addrlen ? *addrlen : 0;
+    size_t local_len = local_addrlen ? *local_addrlen : 0;
     ms_ocall_accept_t* ms;
 
     void* old_ustack = sgx_prepare_ustack();
@@ -1245,12 +1252,20 @@ int ocall_accept(int sockfd, struct sockaddr* addr, size_t* addrlen, int options
 
     WRITE_ONCE(ms->ms_sockfd, sockfd);
     WRITE_ONCE(ms->ms_addrlen, len);
+    WRITE_ONCE(ms->ms_local_addrlen, local_len);
     void* untrusted_addr = (addr && len) ? sgx_copy_to_ustack(addr, len) : NULL;
     if (addr && len && !untrusted_addr) {
         sgx_reset_ustack(old_ustack);
         return -EPERM;
     }
+    void* untrusted_local_addr = (local_addr && local_len) ?
+                                 sgx_copy_to_ustack(local_addr, local_len) : NULL;
+    if (local_addr && local_len && !untrusted_local_addr) {
+        sgx_reset_ustack(old_ustack);
+        return -EPERM;
+    }
     WRITE_ONCE(ms->ms_addr, untrusted_addr);
+    WRITE_ONCE(ms->ms_local_addr, untrusted_local_addr);
     WRITE_ONCE(ms->options, options);
 
     retval = sgx_exitless_ocall(OCALL_ACCEPT, ms);
@@ -1264,12 +1279,21 @@ int ocall_accept(int sockfd, struct sockaddr* addr, size_t* addrlen, int options
 
     if (retval >= 0) {
         if (addr && len) {
-            size_t untrusted_addrlen = READ_ONCE(ms->ms_addrlen);
-            if (!sgx_copy_to_enclave(addr, len, READ_ONCE(ms->ms_addr), untrusted_addrlen)) {
+            size_t untrusted_addrlen = COPY_UNTRUSTED_VALUE(&ms->ms_addrlen);
+            if (!sgx_copy_to_enclave(addr, len, untrusted_addr, untrusted_addrlen)) {
                 sgx_reset_ustack(old_ustack);
                 return -EPERM;
             }
             *addrlen = untrusted_addrlen;
+        }
+        if (local_addr && local_len) {
+            size_t untrusted_local_addrlen = COPY_UNTRUSTED_VALUE(&ms->ms_local_addrlen);
+            if (!sgx_copy_to_enclave(local_addr, local_len, untrusted_local_addr,
+                                     untrusted_local_addrlen)) {
+                sgx_reset_ustack(old_ustack);
+                return -EPERM;
+            }
+            *local_addrlen = untrusted_local_addrlen;
         }
     }
 
@@ -1321,8 +1345,8 @@ int ocall_connect(int domain, int type, int protocol, int ipv6_v6only, const str
 
     if (retval >= 0) {
         if (bind_addr && bind_len) {
-            size_t untrusted_addrlen = READ_ONCE(ms->ms_bind_addrlen);
-            bool copied = sgx_copy_to_enclave(bind_addr, bind_len, READ_ONCE(ms->ms_bind_addr),
+            size_t untrusted_addrlen = COPY_UNTRUSTED_VALUE(&ms->ms_bind_addrlen);
+            bool copied = sgx_copy_to_enclave(bind_addr, bind_len, untrusted_bind_addr,
                                               untrusted_addrlen);
             if (!copied) {
                 sgx_reset_ustack(old_ustack);
@@ -1373,12 +1397,12 @@ int ocall_connect_simple(int fd, struct sockaddr_storage* addr, size_t* addrlen)
         goto out;
     }
 
-    size_t new_addrlen = READ_ONCE(ms->ms_addrlen);
+    size_t new_addrlen = COPY_UNTRUSTED_VALUE(&ms->ms_addrlen);
     if (new_addrlen > sizeof(*addr)) {
         ret = -EPERM;
         goto out;
     }
-    bool copied = sgx_copy_to_enclave(addr, sizeof(*addr), READ_ONCE(ms->ms_addr), new_addrlen);
+    bool copied = sgx_copy_to_enclave(addr, sizeof(*addr), untrusted_addr, new_addrlen);
     if (!copied) {
         ret = -EPERM;
         goto out;
@@ -1471,8 +1495,8 @@ ssize_t ocall_recv(int sockfd, struct iovec* iov, size_t iov_len, void* addr, si
     }
 
     if (addr && addrlen) {
-        size_t untrusted_addrlen = READ_ONCE(ms->ms_addrlen);
-        if (!sgx_copy_to_enclave(addr, addrlen, READ_ONCE(ms->ms_addr), untrusted_addrlen)) {
+        size_t untrusted_addrlen = COPY_UNTRUSTED_VALUE(&ms->ms_addrlen);
+        if (!sgx_copy_to_enclave(addr, addrlen, untrusted_addr, untrusted_addrlen)) {
             retval = -EPERM;
             goto out;
         }
@@ -1480,8 +1504,8 @@ ssize_t ocall_recv(int sockfd, struct iovec* iov, size_t iov_len, void* addr, si
     }
 
     if (control && controllen) {
-        size_t untrusted_controllen = READ_ONCE(ms->ms_controllen);
-        bool copied = sgx_copy_to_enclave(control, controllen, READ_ONCE(ms->ms_control),
+        size_t untrusted_controllen = COPY_UNTRUSTED_VALUE(&ms->ms_controllen);
+        bool copied = sgx_copy_to_enclave(control, controllen, untrusted_control,
                                           untrusted_controllen);
         if (!copied) {
             retval = -EPERM;
@@ -1490,13 +1514,12 @@ ssize_t ocall_recv(int sockfd, struct iovec* iov, size_t iov_len, void* addr, si
         *controllenptr = untrusted_controllen;
     }
 
-    char* host_buf = READ_ONCE(ms->ms_buf);
     size_t host_buf_idx = 0;
     size_t data_size = MIN(size, (size_t)retval);
     for (size_t i = 0; i < iov_len && host_buf_idx < data_size; i++) {
         size_t this_size = MIN(data_size - host_buf_idx, iov[i].iov_len);
         if (!sgx_copy_to_enclave(iov[i].iov_base, iov[i].iov_len,
-                                 host_buf + host_buf_idx, this_size)) {
+                                 (char*)obuf + host_buf_idx, this_size)) {
             retval = -EPERM;
             goto out;
         }
@@ -1513,7 +1536,7 @@ out:
 }
 
 ssize_t ocall_send(int sockfd, const struct iovec* iov, size_t iov_len, const void* addr,
-                   size_t addrlen, void* control, size_t controllen) {
+                   size_t addrlen, void* control, size_t controllen, unsigned int flags) {
     ssize_t retval = 0;
     void* obuf = NULL;
     bool is_obuf_mapped = false;
@@ -1566,6 +1589,7 @@ ssize_t ocall_send(int sockfd, const struct iovec* iov, size_t iov_len, const vo
     WRITE_ONCE(ms->ms_addr, untrusted_addr);
     WRITE_ONCE(ms->ms_control, untrusted_control);
     WRITE_ONCE(ms->ms_controllen, controllen);
+    WRITE_ONCE(ms->ms_flags, flags);
 
     retval = sgx_exitless_ocall(OCALL_SEND, ms);
 
@@ -1679,7 +1703,7 @@ int ocall_gettime(uint64_t* microsec_ptr) {
     }
 
     if (!retval) {
-        uint64_t microsec = READ_ONCE(ms->ms_microsec);
+        uint64_t microsec = COPY_UNTRUSTED_VALUE(&ms->ms_microsec);
         if (microsec < last_microsec_before_ocall) {
             /* Probably a malicious host. */
             log_error("OCALL_GETTIME returned time value smaller than in the previous call");
@@ -1734,7 +1758,7 @@ int ocall_poll(struct pollfd* fds, size_t nfds, uint64_t* timeout_us) {
     retval = sgx_exitless_ocall(OCALL_POLL, ms);
 
     if (timeout_us) {
-        remaining_time_us = retval == 0 ? 0 : READ_ONCE(ms->ms_timeout_us);
+        remaining_time_us = retval == 0 ? 0 : COPY_UNTRUSTED_VALUE(&ms->ms_timeout_us);
         if (remaining_time_us > *timeout_us) {
             remaining_time_us = *timeout_us;
         }
@@ -1749,7 +1773,7 @@ int ocall_poll(struct pollfd* fds, size_t nfds, uint64_t* timeout_us) {
             retval = -EPERM;
             goto out;
         }
-        if (!sgx_copy_to_enclave(fds, nfds_bytes, READ_ONCE(ms->ms_fds), nfds_bytes)) {
+        if (!sgx_copy_to_enclave(fds, nfds_bytes, untrusted_fds, nfds_bytes)) {
             retval = -EPERM;
             goto out;
         }
@@ -1908,6 +1932,10 @@ int ocall_debug_describe_location(uintptr_t addr, char* buf, size_t buf_size) {
     void* old_ustack = sgx_prepare_ustack();
     ms = sgx_alloc_on_ustack_aligned(sizeof(*ms), alignof(*ms));
     ms_buf = sgx_alloc_on_ustack(buf_size);
+    if (!ms || !ms_buf) {
+        retval = -EPERM;
+        goto out;
+    }
 
     WRITE_ONCE(ms->ms_addr, addr);
     WRITE_ONCE(ms->ms_buf, ms_buf);
@@ -2039,7 +2067,7 @@ out:
     return retval;
 }
 
-int ocall_sched_setaffinity(void* tcs, size_t cpumask_size, void* cpu_mask) {
+int ocall_sched_setaffinity(void* tcs, unsigned long* cpu_mask, size_t cpu_mask_len) {
     int retval = 0;
     ms_ocall_sched_setaffinity_t* ms;
 
@@ -2050,9 +2078,10 @@ int ocall_sched_setaffinity(void* tcs, size_t cpumask_size, void* cpu_mask) {
         return -EPERM;
     }
 
+    size_t cpu_mask_size = cpu_mask_len * sizeof(*cpu_mask);
     WRITE_ONCE(ms->ms_tcs, tcs);
-    WRITE_ONCE(ms->ms_cpumask_size, cpumask_size);
-    void* untrusted_cpu_mask = sgx_copy_to_ustack(cpu_mask, cpumask_size);
+    WRITE_ONCE(ms->ms_cpumask_size, cpu_mask_size);
+    void* untrusted_cpu_mask = sgx_copy_to_ustack(cpu_mask, cpu_mask_size);
     if (!untrusted_cpu_mask) {
         sgx_reset_ustack(old_ustack);
         return -EPERM;
@@ -2071,44 +2100,48 @@ int ocall_sched_setaffinity(void* tcs, size_t cpumask_size, void* cpu_mask) {
     return retval;
 }
 
-static bool is_cpumask_valid(void* cpu_mask, size_t cpumask_size) {
+static bool is_cpumask_valid(unsigned long* cpu_mask, size_t cpu_mask_len) {
     /* Linux seems to allow setting affinity to offline threads, so we only need to check against
      * the count of possible threads. */
-    size_t max_cpumask_bits = cpumask_size * BITS_IN_BYTE;
-    size_t valid_cpumask_bits = g_pal_public_state.topo_info.threads_cnt;
-    size_t invalid_bits = max_cpumask_bits - valid_cpumask_bits;
-
-    if (invalid_bits == 0)
+    size_t max_bitmask_len = BITS_TO_LONGS(g_pal_public_state.topo_info.threads_cnt);
+    if (cpu_mask_len < max_bitmask_len) {
         return true;
+    }
+    assert(max_bitmask_len > 0);
 
-    /* create an invalid cpu_mask bits */
-    unsigned long invalid_cpumask = SET_HIGHEST_N_BITS(unsigned long, invalid_bits);
+    size_t invalid_bits_count = max_bitmask_len * BITS_IN_TYPE(unsigned long)
+                                - g_pal_public_state.topo_info.threads_cnt;
+    if (cpu_mask[max_bitmask_len - 1] & SET_HIGHEST_N_BITS(unsigned long, invalid_bits_count)) {
+        return false;
+    }
 
-    /* Extract last 64bits to check if any invalid cpu bits are set */
-    assert(cpumask_size >= sizeof(unsigned long));
-    size_t idx = (cpumask_size / sizeof(unsigned long)) - 1;
-    unsigned long cpumask = ((unsigned long*)cpu_mask)[idx];
+    for (size_t i = max_bitmask_len; i < cpu_mask_len; i++) {
+        if (cpu_mask[i]) {
+            return false;
+        }
+    }
 
-    return !(cpumask & invalid_cpumask);
+    return true;
 }
 
-int ocall_sched_getaffinity(void* tcs, size_t cpumask_size, void* cpu_mask) {
+int ocall_sched_getaffinity(void* tcs, unsigned long* cpu_mask, size_t cpu_mask_len) {
     int retval = 0;
     ms_ocall_sched_getaffinity_t* ms;
 
     void* old_ustack = sgx_prepare_ustack();
     ms = sgx_alloc_on_ustack_aligned(sizeof(*ms), alignof(*ms));
     if (!ms) {
-        sgx_reset_ustack(old_ustack);
-        return -EPERM;
+        retval = -EPERM;
+        goto out;
     }
 
+    size_t cpu_mask_size = cpu_mask_len * sizeof(*cpu_mask);
     WRITE_ONCE(ms->ms_tcs, tcs);
-    WRITE_ONCE(ms->ms_cpumask_size, cpumask_size);
-    void* untrusted_cpu_mask = sgx_copy_to_ustack(cpu_mask, cpumask_size);
+    WRITE_ONCE(ms->ms_cpumask_size, cpu_mask_size);
+    void* untrusted_cpu_mask = sgx_alloc_on_ustack_aligned(cpu_mask_size, alignof(*cpu_mask));
     if (!untrusted_cpu_mask) {
-        sgx_reset_ustack(old_ustack);
-        return -EPERM;
+        retval = -EPERM;
+        goto out;
     }
     WRITE_ONCE(ms->ms_cpu_mask, untrusted_cpu_mask);
 
@@ -2116,16 +2149,32 @@ int ocall_sched_getaffinity(void* tcs, size_t cpumask_size, void* cpu_mask) {
         retval = sgx_exitless_ocall(OCALL_SCHED_GETAFFINITY, ms);
     } while (retval == -EINTR);
 
-    if (retval < 0 && retval != -EINVAL && retval != -EPERM && retval != -ESRCH) {
-        retval = -EPERM;
+    if (retval < 0) {
+        if (retval != -EINVAL && retval != -EPERM && retval != -ESRCH) {
+            retval = -EPERM;
+        }
+        goto out;
     }
 
-    if (retval > 0 && !sgx_copy_to_enclave(cpu_mask, cpumask_size, untrusted_cpu_mask, retval))
+    if (retval % sizeof(*cpu_mask)) {
         retval = -EPERM;
+        goto out;
+    }
 
-    if (retval > 0 && !is_cpumask_valid(cpu_mask, cpumask_size))
+    if (!sgx_copy_to_enclave(cpu_mask, cpu_mask_size, untrusted_cpu_mask, retval)) {
         retval = -EPERM;
+        goto out;
+    }
 
+    assert((size_t)retval <= cpu_mask_size);
+    if (!is_cpumask_valid(cpu_mask, retval / sizeof(*cpu_mask))) {
+        retval = -EPERM;
+        goto out;
+    }
+
+    retval = 0;
+
+out:
     sgx_reset_ustack(old_ustack);
     return retval;
 }

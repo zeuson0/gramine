@@ -14,14 +14,15 @@ static void write_all(PAL_HANDLE handle, int type, char* buf, size_t size) {
             case PAL_TYPE_FILE:
             case PAL_TYPE_PIPE:
             case PAL_TYPE_PIPECLI:
-                CHECK(PalStreamWrite(handle, 0, &this_size, buf + i, NULL));
+                CHECK(PalStreamWrite(handle, 0, &this_size, buf + i));
                 break;
             case PAL_TYPE_SOCKET:;
                 struct pal_iovec iov = {
                     .iov_base = buf + i,
                     .iov_len = this_size,
                 };
-                CHECK(PalSocketSend(handle, &iov, 1, &this_size, /*addr=*/NULL));
+                CHECK(PalSocketSend(handle, &iov, 1, &this_size, /*addr=*/NULL,
+                                    /*force_nonblocking=*/false));
                 break;
             default:
                 BUG();
@@ -41,7 +42,7 @@ static void read_all(PAL_HANDLE handle, int type, char* buf, size_t size) {
         switch (type) {
             case PAL_TYPE_FILE:
             case PAL_TYPE_PIPE:
-                CHECK(PalStreamRead(handle, 0, &this_size, buf + i, NULL, 0));
+                CHECK(PalStreamRead(handle, 0, &this_size, buf + i));
                 break;
             case PAL_TYPE_SOCKET:;
                 struct pal_iovec iov = {
@@ -161,7 +162,8 @@ static void do_child(void) {
 
     /* TCP socket */
     CHECK(PalReceiveHandle(PalGetPalPublicState()->parent_process, &handle));
-    CHECK(PalSocketAccept(handle, /*options=*/0, &client_handle, /*out_client_addr=*/NULL));
+    CHECK(PalSocketAccept(handle, /*options=*/0, &client_handle, /*out_client_addr=*/NULL,
+                          /*out_local_addr=*/NULL));
     PalObjectClose(handle);
     write_msg(client_handle, PAL_TYPE_SOCKET);
     PalObjectClose(client_handle);

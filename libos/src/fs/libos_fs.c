@@ -75,6 +75,9 @@ int init_fs(void) {
     if ((ret = init_sysfs()) < 0)
         goto err;
 
+    if ((ret = init_etcfs()) < 0)
+        goto err;
+
     return 0;
 
 err:
@@ -650,7 +653,9 @@ int init_mount(void) {
     }
     /* Otherwise `cwd` is already initialized. */
 
-    return 0;
+    /* The mount_etcfs takes precedence over user's fs.mounts, and because of that,
+     * it has to be called at the end. */
+    return mount_etcfs();
 }
 
 struct libos_fs* find_fs(const char* name) {
@@ -817,12 +822,12 @@ out:
  */
 void get_mount(struct libos_mount* mount) {
     __UNUSED(mount);
-    // REF_INC(mount->ref_count);
+    // refcount_inc(&mount->ref_count);
 }
 
 void put_mount(struct libos_mount* mount) {
     __UNUSED(mount);
-    // REF_DEC(mount->ref_count);
+    // refcount_dec(&mount->ref_count);
 }
 
 int walk_mounts(int (*walk)(struct libos_mount* mount, void* arg), void* arg) {
@@ -958,7 +963,7 @@ BEGIN_CP_FUNC(mount) {
         new_mount->mount_point = NULL;
         new_mount->root        = NULL;
         INIT_LIST_HEAD(new_mount, list);
-        REF_SET(new_mount->ref_count, 0);
+        refcount_set(&new_mount->ref_count, 0);
 
         DO_CP_MEMBER(str, mount, new_mount, path);
 

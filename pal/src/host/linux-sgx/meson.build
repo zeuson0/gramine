@@ -60,7 +60,6 @@ libpal_sgx = shared_library('pal',
     'enclave_ocalls.c',
     'enclave_pages.c',
     'enclave_platform.c',
-    'enclave_untrusted.c',
     'enclave_xstate.c',
     'pal_devices.c',
     'pal_eventfd.c',
@@ -127,12 +126,13 @@ libpal_sgx = shared_library('pal',
 # host (untrusted runtime)
 libpal_sgx_host = executable('loader',
     'common_manifest_sgx_parser.c',
-    'host_enclave.c',
+    'host_ecalls.c',
     'host_entry.S',
     'host_exception.c',
     'host_framework.c',
     'host_log.c',
     'host_main.c',
+    'host_ocalls.c',
     'host_perf_data.c',
     'host_platform.c',
     'host_process.c',
@@ -217,5 +217,3 @@ if debug
         install_dir: join_paths(pkglibdir, 'sgx/gdb_integration'),
     )
 endif
-
-subdir('tools')

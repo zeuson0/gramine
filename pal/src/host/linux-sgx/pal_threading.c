@@ -25,19 +25,7 @@ struct thread_param {
     void* param;
 };
 
-extern void* g_enclave_base;
-
-/*
- * We do not currently handle tid counter wrap-around, and could, in
- * principle, end up with two threads with the same ID. This is ok, as strict
- * uniqueness is not required; the tid is only used for debugging. We could
- * ensure uniqueness if needed in the future
- */
-static PAL_IDX pal_assign_tid(void) {
-    /* tid 1 is assigned to the first thread; see pal_linux_main() */
-    static struct atomic_int tid = ATOMIC_INIT(1);
-    return __atomic_add_fetch(&tid.counter, 1, __ATOMIC_SEQ_CST);
-}
+extern uintptr_t g_enclave_base;
 
 /* Initialization wrapper of a newly-created thread. This function finds a newly-created thread in
  * g_thread_list, initializes its TCB/TLS, and jumps into the callback-to-run. Gramine uses GCC's
@@ -52,8 +40,8 @@ void pal_start_thread(void) {
     LISTP_FOR_EACH_ENTRY(tmp, &g_thread_list, list)
         if (!tmp->tcs) {
             new_thread = tmp;
-            new_thread->tid = pal_assign_tid();
-            __atomic_store_n(&new_thread->tcs, (g_enclave_base + GET_ENCLAVE_TLS(tcs_offset)),
+            __atomic_store_n(&new_thread->tcs,
+                             (void*)(g_enclave_base + GET_ENCLAVE_TCB(tcs_offset)),
                              __ATOMIC_RELEASE);
             break;
         }
@@ -68,8 +56,8 @@ void pal_start_thread(void) {
     free(thread_param);
     new_thread->param = NULL;
 
-    SET_ENCLAVE_TLS(thread, new_thread);
-    SET_ENCLAVE_TLS(ready_for_exceptions, 1UL);
+    SET_ENCLAVE_TCB(thread, new_thread);
+    SET_ENCLAVE_TCB(ready_for_exceptions, 1UL);
 
     /* each newly-created thread (including the first thread) has its own random stack canary */
     uint64_t stack_protector_canary;
@@ -94,11 +82,6 @@ int _PalThreadCreate(PAL_HANDLE* handle, int (*callback)(void*), void* param) {
 
     init_handle_hdr(new_thread, PAL_TYPE_THREAD);
 
-    /*
-     * tid will be filled later by pal_start_thread()
-     * tid is cleared to avoid random value here.
-     */
-    new_thread->thread.tid = 0;
     new_thread->thread.tcs = NULL;
     INIT_LIST_HEAD(&new_thread->thread, list);
     struct thread_param* thread_param = malloc(sizeof(struct thread_param));
@@ -143,12 +126,12 @@ void _PalThreadYieldExecution(void) {
 
 /* _PalThreadExit for internal use: Thread exiting */
 noreturn void _PalThreadExit(int* clear_child_tid) {
-    struct pal_handle_thread* exiting_thread = GET_ENCLAVE_TLS(thread);
+    struct pal_handle_thread* exiting_thread = GET_ENCLAVE_TCB(thread);
 
     /* thread is ready to exit, must inform LibOS by erasing clear_child_tid;
      * note that we don't do it now (because this thread still occupies SGX
      * TCS slot) but during handle_thread_reset in assembly code */
-    SET_ENCLAVE_TLS(clear_child_tid, clear_child_tid);
+    SET_ENCLAVE_TCB(clear_child_tid, clear_child_tid);
     static_assert(sizeof(*clear_child_tid) == 4, "unexpected clear_child_tid size");
 
     /* main thread is not part of the g_thread_list */
@@ -166,14 +149,33 @@ int _PalThreadResume(PAL_HANDLE thread_handle) {
     return ret < 0 ? unix_to_pal_error(ret) : ret;
 }
 
-int _PalThreadSetCpuAffinity(PAL_HANDLE thread, size_t cpumask_size, unsigned long* cpu_mask) {
-    int ret = ocall_sched_setaffinity(thread->thread.tcs, cpumask_size, cpu_mask);
-    return ret < 0 ? unix_to_pal_error(ret) : ret;
+int _PalThreadSetCpuAffinity(PAL_HANDLE thread, unsigned long* cpu_mask, size_t cpu_mask_len) {
+    int ret = ocall_sched_setaffinity(thread->thread.tcs, cpu_mask, cpu_mask_len);
+    return ret < 0 ? unix_to_pal_error(ret) : 0;
 }
 
-int _PalThreadGetCpuAffinity(PAL_HANDLE thread, size_t cpumask_size, unsigned long* cpu_mask) {
-    int ret = ocall_sched_getaffinity(thread->thread.tcs, cpumask_size, cpu_mask);
-    return ret < 0 ? unix_to_pal_error(ret) : ret;
+int _PalThreadGetCpuAffinity(PAL_HANDLE thread, unsigned long* cpu_mask, size_t cpu_mask_len) {
+    int ret = ocall_sched_getaffinity(thread->thread.tcs, cpu_mask, cpu_mask_len);
+    if (ret < 0) {
+        return unix_to_pal_error(ret);
+    }
+
+    /* Verify that the CPU affinity mask contains only online cores. */
+    size_t threads_count = g_pal_public_state.topo_info.threads_cnt;
+    for (size_t i = 0; i < cpu_mask_len; i++) {
+        for (size_t j = 0; j < BITS_IN_TYPE(__typeof__(*cpu_mask)); j++) {
+            size_t thread_idx = i * BITS_IN_TYPE(__typeof__(*cpu_mask)) + j;
+            if (thread_idx >= threads_count) {
+                break;
+            }
+            if ((cpu_mask[i] & (1ul << j))
+                    && !g_pal_public_state.topo_info.threads[thread_idx].is_online) {
+                return -PAL_ERROR_INVAL;
+            }
+        }
+    }
+
+    return 0;
 }
 
 struct handle_ops g_thread_ops = {

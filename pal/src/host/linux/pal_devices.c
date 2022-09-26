@@ -56,7 +56,8 @@ static int dev_open(PAL_HANDLE* handle, const char* type, const char* uri, enum 
 
         ret = DO_SYSCALL(open, uri, PAL_ACCESS_TO_LINUX_OPEN(access)  |
                                     PAL_CREATE_TO_LINUX_OPEN(create)  |
-                                    PAL_OPTION_TO_LINUX_OPEN(options),
+                                    PAL_OPTION_TO_LINUX_OPEN(options) |
+                                    O_CLOEXEC,
                          share);
         if (ret < 0) {
             ret = unix_to_pal_error(ret);
@@ -82,7 +83,7 @@ fail:
 }
 
 static int64_t dev_read(PAL_HANDLE handle, uint64_t offset, uint64_t size, void* buffer) {
-    if (offset || HANDLE_HDR(handle)->type != PAL_TYPE_DEV)
+    if (offset || handle->hdr.type != PAL_TYPE_DEV)
         return -PAL_ERROR_INVAL;
 
     if (!(handle->flags & PAL_HANDLE_FD_READABLE))
@@ -96,7 +97,7 @@ static int64_t dev_read(PAL_HANDLE handle, uint64_t offset, uint64_t size, void*
 }
 
 static int64_t dev_write(PAL_HANDLE handle, uint64_t offset, uint64_t size, const void* buffer) {
-    if (offset || HANDLE_HDR(handle)->type != PAL_TYPE_DEV)
+    if (offset || handle->hdr.type != PAL_TYPE_DEV)
         return -PAL_ERROR_INVAL;
 
     if (!(handle->flags & PAL_HANDLE_FD_WRITABLE))
@@ -110,7 +111,7 @@ static int64_t dev_write(PAL_HANDLE handle, uint64_t offset, uint64_t size, cons
 }
 
 static int dev_close(PAL_HANDLE handle) {
-    if (HANDLE_HDR(handle)->type != PAL_TYPE_DEV)
+    if (handle->hdr.type != PAL_TYPE_DEV)
         return -PAL_ERROR_INVAL;
 
     /* currently we just assign `0`/`1` FDs without duplicating, so close is a no-op for them */
@@ -123,7 +124,7 @@ static int dev_close(PAL_HANDLE handle) {
 }
 
 static int dev_flush(PAL_HANDLE handle) {
-    if (HANDLE_HDR(handle)->type != PAL_TYPE_DEV)
+    if (handle->hdr.type != PAL_TYPE_DEV)
         return -PAL_ERROR_INVAL;
 
     if (handle->dev.fd != PAL_IDX_POISON) {
@@ -161,7 +162,7 @@ static int dev_attrquery(const char* type, const char* uri, PAL_STREAM_ATTR* att
 }
 
 static int dev_attrquerybyhdl(PAL_HANDLE handle, PAL_STREAM_ATTR* attr) {
-    if (HANDLE_HDR(handle)->type != PAL_TYPE_DEV)
+    if (handle->hdr.type != PAL_TYPE_DEV)
         return -PAL_ERROR_INVAL;
 
     if (handle->dev.fd == 0 || handle->dev.fd == 1) {
@@ -186,7 +187,7 @@ static int dev_attrquerybyhdl(PAL_HANDLE handle, PAL_STREAM_ATTR* attr) {
 
 /* this dummy function is implemented to support opening TTY devices with O_TRUNC flag */
 static int64_t dev_setlength(PAL_HANDLE handle, uint64_t length) {
-    if (HANDLE_HDR(handle)->type != PAL_TYPE_DEV)
+    if (handle->hdr.type != PAL_TYPE_DEV)
         return -PAL_ERROR_INVAL;
 
     if (!(handle->dev.fd == 0 || handle->dev.fd == 1))

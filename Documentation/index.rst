@@ -57,15 +57,16 @@ Table of Contents
 *****************
 
 .. toctree::
-   :caption: Introduction
+   :caption: User Manual
    :maxdepth: 2
 
    quickstart
    manifest-syntax
    attestation
+   performance
    cloud-deployment
    gramine-users
-   gsc
+   container-integration
    sgx-intro
    glossary
 
@@ -99,7 +100,6 @@ Table of Contents
    devel/coding-style
    devel/setup
    devel/debugging
-   devel/performance
    devel/new-syscall
    devel/packaging
 

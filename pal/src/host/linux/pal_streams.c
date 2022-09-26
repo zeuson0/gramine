@@ -58,7 +58,7 @@ int handle_serialize(PAL_HANDLE handle, void** data) {
      * no handle type has more than one such field, and some have none */
     /* XXX: some of these have pointers inside, yet the content is not serialized. How does it even
      * work? Probably unused. Or pure luck. */
-    switch (PAL_GET_TYPE(handle)) {
+    switch (handle->hdr.type) {
         case PAL_TYPE_FILE:
             d   = handle->file.realpath;
             dsz = strlen(handle->file.realpath) + 1;
@@ -101,27 +101,51 @@ int handle_serialize(PAL_HANDLE handle, void** data) {
 }
 
 int handle_deserialize(PAL_HANDLE* handle, const void* data, size_t size) {
-    PAL_HANDLE hdl = malloc(size);
+    size_t hdl_size = handle_size((PAL_HANDLE)data);
+    PAL_HANDLE hdl = malloc(hdl_size);
     if (!hdl)
         return -PAL_ERROR_NOMEM;
 
-    memcpy(hdl, data, size);
-    size_t hdlsz = handle_size(hdl);
+    memcpy(hdl, data, hdl_size);
 
-    /* update handle fields to point to correct contents (located right after handle itself) */
-    switch (PAL_GET_TYPE(hdl)) {
-        case PAL_TYPE_FILE:
-            hdl->file.realpath = (hdl->file.realpath ? (const char*)hdl + hdlsz : NULL);
+    /* update handle fields to point to correct contents */
+    switch (hdl->hdr.type) {
+        case PAL_TYPE_FILE: {
+            assert(hdl_size < size);
+
+            size_t path_size = size - hdl_size;
+            char* path = malloc(path_size);
+            if (!path) {
+                free(hdl);
+                return -PAL_ERROR_NOMEM;
+            }
+
+            memcpy(path, (const char*)data + hdl_size, path_size);
+
+            hdl->file.realpath = path;
             break;
+        }
         case PAL_TYPE_PIPE:
         case PAL_TYPE_PIPESRV:
         case PAL_TYPE_PIPECLI:
             break;
         case PAL_TYPE_DEV:
             break;
-        case PAL_TYPE_DIR:
-            hdl->dir.realpath = (hdl->dir.realpath ? (const char*)hdl + hdlsz : NULL);
+        case PAL_TYPE_DIR: {
+            assert(hdl_size < size);
+
+            size_t path_size = size - hdl_size;
+            char* path = malloc(path_size);
+            if (!path) {
+                free(hdl);
+                return -PAL_ERROR_NOMEM;
+            }
+
+            memcpy(path, (const char*)data + hdl_size, path_size);
+
+            hdl->dir.realpath = path;
             break;
+        }
         case PAL_TYPE_SOCKET:
             fixup_socket_handle_after_deserialization(hdl);
             break;
@@ -138,7 +162,7 @@ int handle_deserialize(PAL_HANDLE* handle, const void* data, size_t size) {
 }
 
 int _PalSendHandle(PAL_HANDLE target_process, PAL_HANDLE cargo) {
-    if (HANDLE_HDR(target_process)->type != PAL_TYPE_PROCESS)
+    if (target_process->hdr.type != PAL_TYPE_PROCESS)
         return -PAL_ERROR_BADHANDLE;
 
     /* serialize cargo handle into a blob hdl_data */
@@ -203,7 +227,7 @@ int _PalSendHandle(PAL_HANDLE target_process, PAL_HANDLE cargo) {
 }
 
 int _PalReceiveHandle(PAL_HANDLE source_process, PAL_HANDLE* out_cargo) {
-    if (HANDLE_HDR(source_process)->type != PAL_TYPE_PROCESS)
+    if (source_process->hdr.type != PAL_TYPE_PROCESS)
         return -PAL_ERROR_BADHANDLE;
 
     ssize_t ret;
@@ -224,11 +248,6 @@ int _PalReceiveHandle(PAL_HANDLE source_process, PAL_HANDLE* out_cargo) {
         return unix_to_pal_error(ret);
 
     if ((size_t)ret != sizeof(hdl_hdr)) {
-        /* This check is to shield from a Iago attack. We know that sendmsg() in _PalSendHandle()
-         * transfers the message atomically, and that our recvmsg() receives it atomically. So
-         * the only valid values for ret must be zero or the size of the header. */
-        if (!ret)
-            return -PAL_ERROR_TRYAGAIN;
         return -PAL_ERROR_DENIED;
     }
 
@@ -244,9 +263,13 @@ int _PalReceiveHandle(PAL_HANDLE source_process, PAL_HANDLE* out_cargo) {
     message_hdr.msg_iov    = iov;
     message_hdr.msg_iovlen = 1;
 
-    ret = DO_SYSCALL(recvmsg, fd, &message_hdr, 0);
+    ret = DO_SYSCALL(recvmsg, fd, &message_hdr, MSG_CMSG_CLOEXEC);
     if (ret < 0)
         return unix_to_pal_error(ret);
+
+    struct cmsghdr* control_hdr = CMSG_FIRSTHDR(&message_hdr);
+    if (!control_hdr || control_hdr->cmsg_type != SCM_RIGHTS)
+        return -PAL_ERROR_DENIED;
 
     /* deserialize cargo handle from a blob hdl_data */
     PAL_HANDLE handle = NULL;
@@ -255,15 +278,12 @@ int _PalReceiveHandle(PAL_HANDLE source_process, PAL_HANDLE* out_cargo) {
         return ret;
 
     /* restore cargo handle's FDs from the received FDs-to-transfer */
-    struct cmsghdr* control_hdr = CMSG_FIRSTHDR(&message_hdr);
-    if (!control_hdr || control_hdr->cmsg_type != SCM_RIGHTS)
-        return -PAL_ERROR_DENIED;
-
     if (hdl_hdr.has_fd) {
         assert(control_hdr->cmsg_len == CMSG_LEN(sizeof(int)));
         memcpy(&handle->generic.fd, CMSG_DATA(control_hdr), sizeof(int));
     } else {
         handle->flags &= ~(PAL_HANDLE_FD_READABLE | PAL_HANDLE_FD_WRITABLE);
+        handle->generic.fd = -1;
     }
 
     *out_cargo = handle;
@@ -280,7 +300,7 @@ int _PalInitDebugStream(const char* path) {
             return unix_to_pal_error(ret);
     }
 
-    ret = DO_SYSCALL(open, path, O_WRONLY | O_APPEND | O_CREAT, PERM_rw_______);
+    ret = DO_SYSCALL(open, path, O_WRONLY | O_APPEND | O_CREAT | O_CLOEXEC, PERM_rw_______);
     if (ret < 0)
         return unix_to_pal_error(ret);
     g_log_fd = ret;

@@ -178,9 +178,9 @@ static inline uint32_t extension_enabled(uint32_t xfrm, uint32_t bit_idx) {
 /*!
  * \brief Sanitize untrusted CPUID inputs.
  *
- * \param[in] leaf       CPUID leaf
- * \param[in] subleaf    CPUID subleaf
- * \param[in,out] values untrusted result to sanitize
+ * \param         leaf     CPUID leaf.
+ * \param         subleaf  CPUID subleaf.
+ * \param[in,out] values   untrusted result to sanitize.
  *
  * The basic idea is that there are only a handful of extensions and we know the size needed to
  * store each extension's state. Use this to sanitize host's untrusted cpuid output. We also know
@@ -500,8 +500,8 @@ int init_cpuid(void) {
     if (ocall_cpuid(EXTENDED_FEATURE_FLAGS_LEAF, 0x0, values) < 0)
         return -PAL_ERROR_DENIED;
 
-    if (values[CPUID_WORD_EAX] > 1) {
-        /* max value for supported sub-leaves of "Extended Feature Flags" leaf is currently 1 */
+    if (values[CPUID_WORD_EAX] > 2) {
+        /* max value for supported sub-leaves of "Extended Feature Flags" leaf is 2 */
         return -PAL_ERROR_DENIED;
     }
 
@@ -649,7 +649,7 @@ int _PalGetSpecialKey(const char* name, void* key, size_t* key_size) {
 ssize_t read_file_buffer(const char* filename, char* buf, size_t buf_size) {
     int fd;
 
-    fd = ocall_open(filename, O_RDONLY, 0);
+    fd = ocall_open(filename, O_RDONLY | O_CLOEXEC, 0);
     if (fd < 0)
         return fd;
 
@@ -709,7 +709,7 @@ int _PalRandomBitsRead(void* buffer, size_t size) {
 int _PalSegmentBaseGet(enum pal_segment_reg reg, uintptr_t* addr) {
     switch (reg) {
         case PAL_SEGMENT_FS:
-            *addr = GET_ENCLAVE_TLS(fsbase);
+            *addr = GET_ENCLAVE_TCB(fsbase);
             return 0;
         case PAL_SEGMENT_GS:
             /* GS is internally used, deny any access to it */
@@ -722,7 +722,7 @@ int _PalSegmentBaseGet(enum pal_segment_reg reg, uintptr_t* addr) {
 int _PalSegmentBaseSet(enum pal_segment_reg reg, uintptr_t addr) {
     switch (reg) {
         case PAL_SEGMENT_FS:
-            SET_ENCLAVE_TLS(fsbase, addr);
+            SET_ENCLAVE_TCB(fsbase, addr);
             wrfsbase((uint64_t)addr);
             return 0;
         case PAL_SEGMENT_GS:

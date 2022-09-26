@@ -14,6 +14,7 @@
 
 #include "api.h"
 #include "libos_internal.h"
+#include "libos_lock.h"
 #include "libos_table.h"
 #include "libos_thread.h"
 #include "pal.h"
@@ -140,106 +141,178 @@ long libos_syscall_sched_rr_get_interval(pid_t pid, struct timespec* interval) {
     return 0;
 }
 
-long libos_syscall_sched_setaffinity(pid_t pid, unsigned int cpumask_size,
+long libos_syscall_sched_setaffinity(pid_t pid, unsigned int user_mask_size,
                                      unsigned long* user_mask_ptr) {
     int ret;
 
-    /* check if user_mask_ptr is valid */
-    if (!is_user_memory_readable(user_mask_ptr, cpumask_size))
+    if (!is_user_memory_readable(user_mask_ptr, user_mask_size)) {
         return -EFAULT;
+    }
 
-    struct libos_thread* thread = pid ? lookup_thread(pid) : get_cur_thread();
-    if (!thread)
-        return -ESRCH;
-
-    /* lookup_thread() internally increments thread count; do the same in case of
-       get_cur_thread(). */
-    if (pid == 0)
+    struct libos_thread* thread;
+    if (pid) {
+        thread = lookup_thread(pid);
+        if (!thread) {
+            return -ESRCH;
+        }
+    } else {
+        thread = get_cur_thread();
         get_thread(thread);
-
-    /* Internal Gramine threads are not affinitized; if we hit an internal thread here, this is
-       some bug in user app. */
-    if (is_internal(thread)) {
-        put_thread(thread);
-        return -ESRCH;
     }
 
-    ret = PalThreadSetCpuAffinity(thread->pal_handle, cpumask_size, user_mask_ptr);
+    /* allocate temporary CPU mask on stack for the common case of platforms with <= 1024 CPUs; we
+     * try to avoid heap allocations because current memory allocator has a global lock */
+    bool cpu_mask_on_heap;
+    unsigned long* cpu_mask;
+    size_t cpu_mask_size = GET_CPU_MASK_LEN() * sizeof(*cpu_mask);
+
+    if (cpu_mask_size <= 128) {
+        /* fast path: allocate on stack if the platform has <= 1024 CPUs */
+        cpu_mask_on_heap = false;
+        cpu_mask = __alloca(cpu_mask_size);
+    } else {
+        /* slow path: allocate on heap if the platform has > 1024 CPUs */
+        cpu_mask_on_heap = true;
+        cpu_mask = malloc(cpu_mask_size);
+        if (!cpu_mask) {
+            ret = -ENOMEM;
+            goto out;
+        }
+    }
+
+    memset(cpu_mask, 0, cpu_mask_size);
+    memcpy(cpu_mask, user_mask_ptr, MIN(user_mask_size, cpu_mask_size));
+
+    bool seen_online = false;
+    size_t threads_count = g_pal_public_state->topo_info.threads_cnt;
+    /* Remove offline cores from mask. */
+    for (size_t i = 0; i < GET_CPU_MASK_LEN(); i++) {
+        for (size_t j = 0; j < BITS_IN_TYPE(__typeof__(*cpu_mask)); j++) {
+            size_t thread_idx = i * BITS_IN_TYPE(__typeof__(*cpu_mask)) + j;
+            if (thread_idx >= threads_count
+                    || !g_pal_public_state->topo_info.threads[thread_idx].is_online) {
+                cpu_mask[i] &= ~(1ul << j);
+            }
+            if (cpu_mask[i] & (1ul << j)) {
+                seen_online = true;
+            }
+        }
+    }
+
+    if (!seen_online) {
+        ret = -EINVAL;
+        goto out;
+    }
+
+    lock(&thread->lock);
+    ret = PalThreadSetCpuAffinity(thread->pal_handle, cpu_mask, GET_CPU_MASK_LEN());
     if (ret < 0) {
-        put_thread(thread);
-        return pal_to_unix_errno(ret);
+        ret = pal_to_unix_errno(ret);
+        goto out_unlock;
     }
 
+    memcpy(thread->cpu_affinity_mask, cpu_mask, cpu_mask_size);
+    ret = 0;
+
+out_unlock:
+    unlock(&thread->lock);
+out:
+    if (cpu_mask_on_heap)
+        free(cpu_mask);
     put_thread(thread);
-    return 0;
+    return ret;
 }
 
-long libos_syscall_sched_getaffinity(pid_t pid, unsigned int cpumask_size,
+long libos_syscall_sched_getaffinity(pid_t pid, unsigned int user_mask_size,
                                      unsigned long* user_mask_ptr) {
-    int ret;
-    size_t threads_cnt = g_pal_public_state->topo_info.threads_cnt;
-
-    /* Check if user_mask_ptr is valid */
-    if (!is_user_memory_writable(user_mask_ptr, cpumask_size))
+    if (!is_user_memory_writable(user_mask_ptr, user_mask_size)) {
         return -EFAULT;
+    }
 
-    /* Linux kernel bitmap is based on long. So according to its implementation, round up the result
-     * to sizeof(long) */
-    size_t bitmask_size_in_bytes = BITS_TO_LONGS(threads_cnt) * sizeof(long);
-    if (cpumask_size < bitmask_size_in_bytes) {
-        log_warning("size of cpumask must be at least %lu but supplied cpumask is %u",
-                    bitmask_size_in_bytes, cpumask_size);
+    if (user_mask_size % sizeof(unsigned long)) {
         return -EINVAL;
     }
 
-    /* Linux kernel also rejects non-natural size */
-    if (cpumask_size & (sizeof(long) - 1))
+    if (user_mask_size < GET_CPU_MASK_LEN() * sizeof(unsigned long)) {
         return -EINVAL;
+    }
 
-    struct libos_thread* thread = pid ? lookup_thread(pid) : get_cur_thread();
-    if (!thread)
-        return -ESRCH;
-
-    /* lookup_thread() internally increments thread count; do the same in case of
-       get_cur_thread(). */
-    if (pid == 0)
+    struct libos_thread* thread;
+    if (pid) {
+        thread = lookup_thread(pid);
+        if (!thread) {
+            return -ESRCH;
+        }
+    } else {
+        thread = get_cur_thread();
         get_thread(thread);
-
-    /* Internal Gramine threads are not affinitized; if we hit an internal thread here, this is
-       some bug in user app. */
-    if (is_internal(thread)) {
-        put_thread(thread);
-        return -ESRCH;
     }
 
-    memset(user_mask_ptr, 0, cpumask_size);
-    ret = PalThreadGetCpuAffinity(thread->pal_handle, bitmask_size_in_bytes, user_mask_ptr);
-    if (ret < 0) {
-        put_thread(thread);
-        return pal_to_unix_errno(ret);
-    }
+    lock(&thread->lock);
+    memcpy(user_mask_ptr, thread->cpu_affinity_mask, GET_CPU_MASK_LEN() * sizeof(unsigned long));
+    unlock(&thread->lock);
 
     put_thread(thread);
-    /* on success, imitate Linux kernel implementation: see SYSCALL_DEFINE3(sched_getaffinity) */
-    return bitmask_size_in_bytes;
+    return GET_CPU_MASK_LEN() * sizeof(unsigned long);
 }
 
-/* dummy implementation: always return cpu0  */
+/* Approx. implementation that returns a random bit that is set from the cpu affinity mask
+ * associated with the current calling thread */
 long libos_syscall_getcpu(unsigned* cpu, unsigned* node, struct getcpu_cache* unused) {
     __UNUSED(unused);
 
-    if (cpu) {
-        if (!is_user_memory_writable(cpu, sizeof(*cpu))) {
-            return -EFAULT;
-        }
-        *cpu = 0;
+    int ret;
+    if (cpu && !is_user_memory_writable(cpu, sizeof(*cpu)))
+        return -EFAULT;
+
+    if (node && !is_user_memory_writable(node, sizeof(*node)))
+        return -EFAULT;
+
+    struct libos_thread* thread = get_cur_thread();
+
+    unsigned long rand_num = 0;
+    ret = PalRandomBitsRead(&rand_num, sizeof(rand_num));
+    if (ret < 0) {
+        return pal_to_unix_errno(ret);
     }
 
-    if (node) {
-        if (!is_user_memory_writable(node, sizeof(*node))) {
-            return -EFAULT;
+    lock(&thread->lock);
+    /* CPU affinity mask is basically an array of unsigned long(s). Below logic randomly selects a
+     * bit set from the threads's cpu affinity mask and returns it to the user. */
+    size_t num_bits = 0;
+    for (size_t i = 0; i < GET_CPU_MASK_LEN(); i++)
+        num_bits += count_ulong_bits_set(thread->cpu_affinity_mask[i]);
+    assert(num_bits);
+    size_t target_bit = rand_num % num_bits;
+
+    unsigned long cpu_current = ULONG_MAX;
+    for (size_t i = 0; i < GET_CPU_MASK_LEN(); i++) {
+        size_t cnt_bits_set = count_ulong_bits_set(thread->cpu_affinity_mask[i]);
+        if (target_bit >= cnt_bits_set) {
+            target_bit -= cnt_bits_set;
+        } else {
+            unsigned long cpumask = thread->cpu_affinity_mask[i];
+            /* Mask out `target_bit` lowest bits. */
+            while (target_bit--) {
+                cpumask &= cpumask - 1;
+            }
+            assert(cpumask);
+            cpu_current = __builtin_ctzl(cpumask) +
+                          i * BITS_IN_TYPE(__typeof__(*thread->cpu_affinity_mask));
+            break;
         }
-        *node = 0;
+    }
+    unlock(&thread->lock);
+
+    assert(cpu_current < GET_CPU_MASK_LEN() * BITS_IN_TYPE(__typeof__(*thread->cpu_affinity_mask)));
+    assert(g_pal_public_state->topo_info.threads[cpu_current].is_online);
+
+    if (cpu)
+        *cpu = cpu_current;
+
+    if (node) {
+        size_t core_id = g_pal_public_state->topo_info.threads[cpu_current].core_id;
+        *node = g_pal_public_state->topo_info.cores[core_id].node_id;
     }
 
     return 0;

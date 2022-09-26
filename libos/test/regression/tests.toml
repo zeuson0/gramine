@@ -2,6 +2,7 @@ binary_dir = "@GRAMINE_PKGLIBDIR@/tests/libos/regression"
 
 manifests = [
   "argv_from_file",
+  "argv_from_manifest",
   "abort",
   "abort_multithread",
   "bootstrap",
@@ -49,6 +50,8 @@ manifests = [
   "gettimeofday",
   "groups",
   "helloworld",
+  "hostname",
+  "hostname_extra_runtime_conf",
   "host_root_fs",
   "init_fail",
   "keys",
@@ -90,6 +93,7 @@ manifests = [
   "select",
   "send_handle",
   "shared_object",
+  "shebang_test_script",
   "sigaction_per_process",
   "sigaltstack",
   "sighandler_reset",

@@ -15,18 +15,6 @@
 #include "libos_vma.h"
 #include "pal.h"
 
-static int close_on_exec(struct libos_fd_handle* fd_hdl, struct libos_handle_map* map) {
-    if (fd_hdl->flags & FD_CLOEXEC) {
-        struct libos_handle* hdl = __detach_fd_handle(fd_hdl, NULL, map);
-        put_handle(hdl);
-    }
-    return 0;
-}
-
-static int close_cloexec_handle(struct libos_handle_map* map) {
-    return walk_handle_map(&close_on_exec, map);
-}
-
 /* new_argp: pointer to beginning of first stack frame (argc, argv[0], ...)
  * new_auxv: pointer inside first stack frame (auxv[0], auxv[1], ...) */
 noreturn static void __libos_syscall_execve_rtld(void* new_argp, elf_auxv_t* new_auxv) {
@@ -95,12 +83,14 @@ error:
     process_exit(/*error_code=*/0, /*term_signal=*/SIGKILL);
 }
 
-static int libos_syscall_execve_rtld(struct libos_handle* hdl, char** argv, const char** envp) {
+/* `libos_syscall_execve()` passes ownership of `argv` to this function, so this function is
+ * responsible for freeing it (both the array of pointers and the strings themselves) */
+static int libos_syscall_execve_rtld(struct libos_handle* hdl, char** argv,
+                                     const char* const* envp) {
     struct libos_thread* cur_thread = get_cur_thread();
     int ret;
 
-    if ((ret = close_cloexec_handle(cur_thread->handle_map)) < 0)
-        return ret;
+    close_cloexec_handles(cur_thread->handle_map);
 
     lock(&g_process.fs_lock);
     put_handle(g_process.exec);
@@ -117,12 +107,16 @@ static int libos_syscall_execve_rtld(struct libos_handle* hdl, char** argv, cons
 
     migrated_envp = NULL;
 
-    const char** new_argp;
+    char** new_argp;
     elf_auxv_t* new_auxv;
 
-    /* TODO: init_stack() and its call chain have a wrong signature for `argv`; for now explicitly
-     *       cast it to the expected type to silence compiler warnings */
-    ret = init_stack((const char**)argv, envp, &new_argp, &new_auxv);
+    ret = init_process_cmdline((const char* const*)argv);
+    if (ret < 0)
+        return ret;
+
+    /* note the typecast of argv here: the C standard disallows implicit conversion of `char**` ->
+     * `const char* const*`, but in reality it is safe to do */
+    ret = init_stack((const char* const*)argv, envp, &new_argp, &new_auxv);
     if (ret < 0)
         return ret;
 
@@ -138,13 +132,13 @@ static int libos_syscall_execve_rtld(struct libos_handle* hdl, char** argv, cons
     /* UNREACHABLE */
 }
 
-long libos_syscall_execve(const char* file, const char** argv, const char** envp) {
+long libos_syscall_execve(const char* file, const char* const* argv, const char* const* envp) {
     int ret = 0, argc = 0;
 
     if (!is_user_string_readable(file))
         return -EFAULT;
 
-    for (const char** a = argv; /* no condition*/; a++, argc++) {
+    for (const char* const* a = argv; /* no condition*/; a++, argc++) {
         if (!is_user_memory_readable(a, sizeof(*a)))
             return -EFAULT;
         if (*a == NULL)
@@ -157,7 +151,7 @@ long libos_syscall_execve(const char* file, const char** argv, const char** envp
     if (!envp)
         envp = migrated_envp;
 
-    for (const char** e = envp; /* no condition*/; e++) {
+    for (const char* const* e = envp; /* no condition*/; e++) {
         if (!is_user_memory_readable(e, sizeof(*e)))
             return -EFAULT;
         if (*e == NULL)

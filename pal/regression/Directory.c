@@ -20,7 +20,7 @@ int main(int argc, char** argv, char** envp) {
         }
 
         size_t bytes = sizeof(buffer);
-        ret = PalStreamRead(dir1, 0, &bytes, buffer, NULL, 0);
+        ret = PalStreamRead(dir1, 0, &bytes, buffer);
         if (ret >= 0 && bytes) {
             for (char* c = buffer; c < buffer + bytes; c += strlen(c) + 1)
                 if (strlen(c))
@@ -92,6 +92,24 @@ int main(int argc, char** argv, char** envp) {
             return 1;
         }
         PalObjectClose(dir7);
+    }
+
+    PAL_HANDLE dir8 = NULL;
+    ret = PalStreamOpen("dir:dir_rename.tmp", PAL_ACCESS_RDWR,
+                        PAL_SHARE_OWNER_R | PAL_SHARE_OWNER_W | PAL_SHARE_OWNER_X,
+                        PAL_CREATE_TRY, /*options=*/0, &dir8);
+    if (ret >= 0 && dir8) {
+        ret = PalStreamChangeName(dir8, "dir:dir_rename_delete.tmp");
+        if (ret < 0) {
+            pal_printf("PalStreamChangeName failed: %d\n", ret);
+            return 1;
+        }
+        ret = PalStreamDelete(dir8, PAL_DELETE_ALL);
+        if (ret < 0) {
+            pal_printf("PalStreamDelete failed: %d\n", ret);
+            return 1;
+        }
+        PalObjectClose(dir8);
     }
 
     return 0;

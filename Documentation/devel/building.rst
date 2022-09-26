@@ -37,17 +37,16 @@ Run the following command on Ubuntu LTS to install dependencies::
 
     sudo apt-get install -y build-essential \
         autoconf bison gawk nasm ninja-build python3 python3-click \
-        python3-jinja2 wget
-    sudo python3 -m pip install 'meson>=0.55' 'toml>=0.10'
+        python3-jinja2 python3-pyelftools wget
+    sudo python3 -m pip install 'meson>=0.56' 'toml>=0.10'
 
 You can also install Meson and python3-toml from apt instead of pip, but only if
-your distro is new enough to have Meson >= 0.55 and python3-toml >= 0.10 (Debian
+your distro is new enough to have Meson >= 0.56 and python3-toml >= 0.10 (Debian
 11, Ubuntu 20.10).
 
 For GDB support and to run all tests locally you also need to install::
 
-    sudo apt-get install -y libunwind8 musl-tools python3-pyelftools \
-        python3-pytest
+    sudo apt-get install -y libunwind8 musl-tools python3-pytest
 
 If you want to build the patched ``libgomp`` library, you also need to install
 GCC's build dependencies::
@@ -72,8 +71,9 @@ running, and Intel SGX SDK/PSW/DCAP must be installed.
 """"""""""""""""""""
 Run the following commands on Ubuntu to install SGX-related dependencies::
 
-    sudo apt-get install -y libcurl4-openssl-dev libprotobuf-c-dev \
-        protobuf-c-compiler python3-cryptography python3-pip python3-protobuf
+    sudo apt-get install -y libcurl4-openssl-dev \
+        libprotobuf-c-dev protobuf-c-compiler protobuf-compiler \
+        python3-cryptography python3-pip python3-protobuf
 
 2. Install Linux kernel with patched FSGSBASE
 """""""""""""""""""""""""""""""""""""""""""""
@@ -124,7 +124,17 @@ DCAP version of the Intel SGX driver from:
 4. Install Intel SGX SDK/PSW
 """"""""""""""""""""""""""""
 
-Follow the installation instructions from:
+Follow the installation instructions from the "Intel SGX Software Installation
+Guide" version 1.14 (the latest version as of July 2022):
+
+- https://download.01.org/intel-sgx/sgx-dcap/1.14/linux/docs/Intel_SGX_SW_Installation_Guide_for_Linux.pdf
+
+In general, various documentation for Intel SGX SDK/PSW can be found here:
+
+- https://download.01.org/intel-sgx/sgx-dcap/1.14/linux/docs
+
+Additional information, package descriptions, etc. can be found in the official
+"Intel SGX for Linux" GitHub repo:
 
 - https://github.com/intel/linux-sgx
 

@@ -1,7 +1,6 @@
 loader.entrypoint = "file:{{ gramine.libos }}"
 libos.entrypoint = "multi_pthread"
 
-loader.argv0_override = "multi_pthread"
 loader.env.LD_LIBRARY_PATH = "/lib"
 
 fs.mounts = [
@@ -11,7 +10,7 @@ fs.mounts = [
 
 # app runs with 4 parallel threads + Gramine has couple internal threads
 sgx.thread_num = 8
-sgx.rpc_thread_num = 8
+sgx.insecure__rpc_thread_num = 8
 
 sgx.nonpie_binary = true
 sgx.debug = true

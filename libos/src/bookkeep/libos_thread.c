@@ -30,14 +30,6 @@
 static LISTP_TYPE(libos_thread) g_thread_list = LISTP_INIT;
 struct libos_lock g_thread_list_lock;
 
-//#define DEBUG_REF
-
-#ifdef DEBUG_REF
-#define DEBUG_PRINT_REF_COUNT(rc) log_debug("%s %p ref_count = %d", __func__, dispositions, rc)
-#else
-#define DEBUG_PRINT_REF_COUNT(rc) __UNUSED(rc)
-#endif
-
 static struct libos_signal_dispositions* alloc_default_signal_dispositions(void) {
     struct libos_signal_dispositions* dispositions = malloc(sizeof(*dispositions));
     if (!dispositions) {
@@ -48,7 +40,7 @@ static struct libos_signal_dispositions* alloc_default_signal_dispositions(void)
         free(dispositions);
         return NULL;
     }
-    REF_SET(dispositions->ref_count, 1);
+    refcount_set(&dispositions->ref_count, 1);
     for (size_t i = 0; i < ARRAY_SIZE(dispositions->actions); i++) {
         sigaction_make_defaults(&dispositions->actions[i]);
     }
@@ -74,7 +66,7 @@ static struct libos_thread* alloc_new_thread(void) {
         return NULL;
     }
 
-    REF_SET(thread->ref_count, 1);
+    refcount_set(&thread->ref_count, 1);
     INIT_LIST_HEAD(thread, list);
     /* default value as sigalt stack isn't specified yet */
     thread->signal_altstack.ss_flags = SS_DISABLE;
@@ -207,7 +199,7 @@ static int init_main_thread(void) {
                          /*auto_clear=*/true);
     if (ret < 0) {
         put_thread(cur_thread);
-        return pal_to_unix_errno(ret);;
+        return pal_to_unix_errno(ret);
     }
 
     /* TODO: I believe there is some PAL allocated initial stack which could be reused by the first
@@ -219,6 +211,21 @@ static int init_main_thread(void) {
     }
 
     cur_thread->pal_handle = g_pal_public_state->first_thread;
+
+    cur_thread->cpu_affinity_mask = calloc(GET_CPU_MASK_LEN(),
+                                           sizeof(*cur_thread->cpu_affinity_mask));
+    if (!cur_thread->cpu_affinity_mask) {
+        put_thread(cur_thread);
+        return -ENOMEM;
+    }
+    ret = PalThreadGetCpuAffinity(cur_thread->pal_handle, cur_thread->cpu_affinity_mask,
+                                  GET_CPU_MASK_LEN());
+    if (ret < 0) {
+        ret = pal_to_unix_errno(ret);
+        log_error("Failed to get thread CPU affinity mask: %d", ret);
+        put_thread(cur_thread);
+        return ret;
+    }
 
     set_cur_thread(cur_thread);
     add_thread(cur_thread);
@@ -274,6 +281,12 @@ struct libos_thread* get_new_thread(void) {
         memcpy(thread->groups_info.groups, cur_thread->groups_info.groups, groups_size);
     }
 
+    thread->cpu_affinity_mask = malloc(GET_CPU_MASK_LEN() * sizeof(*thread->cpu_affinity_mask));
+    if (!thread->cpu_affinity_mask) {
+        put_thread(thread);
+        return NULL;
+    }
+
     lock(&cur_thread->lock);
 
     thread->uid       = cur_thread->uid;
@@ -299,6 +312,9 @@ struct libos_thread* get_new_thread(void) {
     assert(map);
     set_handle_map(thread, map);
 
+    memcpy(thread->cpu_affinity_mask, cur_thread->cpu_affinity_mask,
+           GET_CPU_MASK_LEN() * sizeof(*thread->cpu_affinity_mask));
+
     unlock(&cur_thread->lock);
 
     int ret = PalEventCreate(&thread->scheduler_event, /*init_signaled=*/false,
@@ -316,14 +332,11 @@ struct libos_thread* get_new_internal_thread(void) {
 }
 
 void get_signal_dispositions(struct libos_signal_dispositions* dispositions) {
-    int ref_count = REF_INC(dispositions->ref_count);
-    DEBUG_PRINT_REF_COUNT(ref_count);
+    refcount_inc(&dispositions->ref_count);
 }
 
 void put_signal_dispositions(struct libos_signal_dispositions* dispositions) {
-    int ref_count = REF_DEC(dispositions->ref_count);
-
-    DEBUG_PRINT_REF_COUNT(ref_count);
+    refcount_t ref_count = refcount_dec(&dispositions->ref_count);
 
     if (!ref_count) {
         destroy_lock(&dispositions->lock);
@@ -332,14 +345,11 @@ void put_signal_dispositions(struct libos_signal_dispositions* dispositions) {
 }
 
 void get_thread(struct libos_thread* thread) {
-    int ref_count = REF_INC(thread->ref_count);
-    DEBUG_PRINT_REF_COUNT(ref_count);
+    refcount_inc(&thread->ref_count);
 }
 
 void put_thread(struct libos_thread* thread) {
-    int ref_count = REF_DEC(thread->ref_count);
-
-    DEBUG_PRINT_REF_COUNT(ref_count);
+    refcount_t ref_count = refcount_dec(&thread->ref_count);
 
     if (!ref_count) {
         assert(LIST_EMPTY(thread, list));
@@ -393,6 +403,8 @@ void put_thread(struct libos_thread* thread) {
         if (thread->tid && !is_internal(thread)) {
             release_id(thread->tid);
         }
+
+        free(thread->cpu_affinity_mask);
 
         destroy_pollable_event(&thread->pollable_event);
 
@@ -526,7 +538,7 @@ BEGIN_CP_FUNC(signal_dispositions) {
 
         *new_dispositions = *dispositions;
         clear_lock(&new_dispositions->lock);
-        REF_SET(new_dispositions->ref_count, 0);
+        refcount_set(&new_dispositions->ref_count, 0);
 
         unlock(&dispositions->lock);
 
@@ -580,12 +592,17 @@ BEGIN_CP_FUNC(thread) {
 
         new_thread->pal_handle = NULL;
 
+        size_t mask_off = ADD_CP_OFFSET(GET_CPU_MASK_LEN() * sizeof(*thread->cpu_affinity_mask));
+        new_thread->cpu_affinity_mask = (void*)(base + mask_off);
+        memcpy(new_thread->cpu_affinity_mask, thread->cpu_affinity_mask,
+               GET_CPU_MASK_LEN() * sizeof(*thread->cpu_affinity_mask));
+
         memset(&new_thread->pollable_event, 0, sizeof(new_thread->pollable_event));
 
         new_thread->handle_map = NULL;
         memset(&new_thread->signal_queue, 0, sizeof(new_thread->signal_queue));
         new_thread->robust_list = NULL;
-        REF_SET(new_thread->ref_count, 0);
+        refcount_set(&new_thread->ref_count, 0);
 
         DO_CP_MEMBER(signal_dispositions, thread, new_thread, signal_dispositions);
 
@@ -657,6 +674,8 @@ BEGIN_RS_FUNC(thread) {
         *thread->set_child_tid = thread->tid;
         thread->set_child_tid = NULL;
     }
+
+    CP_REBASE(thread->cpu_affinity_mask);
 
     assert(!get_cur_thread());
 

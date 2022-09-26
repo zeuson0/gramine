@@ -87,8 +87,7 @@ typedef ptrdiff_t ssize_t;
 #define BITS_IN_TYPE(type)              (sizeof(type) * BITS_IN_BYTE)
 #define BITS_TO_UINT32S(nr)             UDIV_ROUND_UP(nr, BITS_IN_TYPE(uint32_t))
 #define BITS_TO_LONGS(nr)               UDIV_ROUND_UP(nr, BITS_IN_TYPE(long))
-/* Note: This macro is not intended for use when nbits == BITS_IN_TYPE(type) */
-#define SET_HIGHEST_N_BITS(type, nbits) (~(((uint64_t)1 << (BITS_IN_TYPE(type) - (nbits))) - 1))
+#define SET_HIGHEST_N_BITS(type, nbits) (nbits ? ~(((type)1 << (BITS_IN_TYPE(type) - (nbits))) - 1) : 0)
 #define WITHIN_MASK(val, mask) (((val) | (mask)) == (mask))
 
 #define IS_ALIGNED(val, alignment)     ((val) % (alignment) == 0)
@@ -237,6 +236,7 @@ int tolower(int c);
 int toupper(int c);
 int isalpha(int c);
 int isdigit(int c);
+int isxdigit(int c);
 int isalnum(int c);
 
 char* strchr(const char* s, int c);
@@ -247,6 +247,21 @@ void* memcpy(void* restrict dest, const void* restrict src, size_t count);
 void* memmove(void* dest, const void* src, size_t count);
 void* memset(void* dest, int ch, size_t count);
 int memcmp(const void* lhs, const void* rhs, size_t count);
+
+/*!
+ * \brief Constant-time buffer comparison.
+ *
+ * \param lhs    Pointer to the first buffer.
+ * \param rhs    Pointer to the second buffer.
+ * \param count  The number of bytes to compare in the buffer.
+ *
+ * \returns true if the content of the two buffers is the same, otherwise false.
+ *
+ * The time taken by this function depends on `count`, but not on the data at `lhs` or `rhs`.
+ * Hence, it can be used for comparing cryptographic secrets, hashes, message authentication codes
+ * etc. without timing side-channel leaks.
+ */
+bool ct_memequal(const void* lhs, const void* rhs, size_t count);
 
 /* Used by _FORTIFY_SOURCE */
 void* __memcpy_chk(void* restrict dest, const void* restrict src, size_t count, size_t dest_count);
