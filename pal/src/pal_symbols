@@ -46,6 +46,7 @@ PalStreamAttributesSetByHandle
 PalMemoryAvailableQuota
 PalDebugMapAdd
 PalDebugMapRemove
+PalDeviceIoControl
 PalDebugDescribeLocation
 PalAttestationReport
 PalAttestationQuote

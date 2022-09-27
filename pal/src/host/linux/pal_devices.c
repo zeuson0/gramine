@@ -10,6 +10,7 @@
  *       implemented (without device-specific changes to LibOS layer).
  */
 
+#include <sys/socket.h>
 #include "api.h"
 #include "pal.h"
 #include "pal_error.h"
@@ -209,3 +210,19 @@ struct handle_ops g_dev_ops = {
     .attrquery      = &dev_attrquery,
     .attrquerybyhdl = &dev_attrquerybyhdl,
 };
+int _PalDeviceIoControl(PAL_HANDLE handle, unsigned int cmd, uint64_t arg) {
+    int sock = 0;
+    if(handle ==NULL) {
+        sock = DO_SYSCALL(socket, AF_UNIX, SOCK_STREAM, 0);
+        if (sock < 0)
+            return sock;
+    }
+    else {
+        if (HANDLE_TYPE(handle) != PAL_TYPE_SOCKET)
+            return -PAL_ERROR_INVAL;
+    }
+    int ret = DO_SYSCALL(ioctl, (handle? handle->sock.fd:(unsigned int)sock), cmd, arg);
+    if (sock)
+        DO_SYSCALL(close, sock);
+    return ret < 0 ? unix_to_pal_error(ret) : 0;
+}

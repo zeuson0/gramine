@@ -121,6 +121,7 @@ manifests = [
   "debug_regs_x86_64",
   "rdtsc",
   "bootstrap_cpp",
+  "ioctl",
   "sighandler_divbyzero",
 ]
 
