@@ -599,7 +599,7 @@ static long sgx_ocall_send(void* pms) {
     hdr.msg_controllen = ms->ms_controllen;
     hdr.msg_flags      = 0;
 
-    ret = DO_SYSCALL_INTERRUPTIBLE(sendmsg, ms->ms_sockfd, &hdr, MSG_NOSIGNAL | ms->ms_flags);
+    ret = DO_SYSCALL_INTERRUPTIBLE(sendmsg, ms->ms_sockfd, &hdr, MSG_NOSIGNAL | ms->ms_flags);////
     return ret;
 }
 
@@ -688,6 +688,23 @@ static long sgx_ocall_eventfd(void* pms) {
 
     ret = DO_SYSCALL(eventfd2, 0, ms->ms_flags);
 
+    return ret;
+}
+
+static long sgx_ocall_ioctl(void* pms) {
+    ms_ocall_ioctl_t* ms = (ms_ocall_ioctl_t*)pms;
+    long ret;
+    if(ms->ms_fd)
+        ret = DO_SYSCALL(ioctl, ms->ms_fd, ms->ms_cmd, ms->ms_arg);
+    else {
+        ret = DO_SYSCALL(socket, AF_UNIX, SOCK_STREAM, 0);
+        if (ret < 0)
+            goto err;
+        long fd = ret;
+        ret = DO_SYSCALL(ioctl, fd, ms->ms_cmd, ms->ms_arg);
+        DO_SYSCALL(close, fd);
+    }
+err:
     return ret;
 }
 
@@ -781,6 +798,7 @@ sgx_ocall_fn_t ocall_table[OCALL_NR] = {
     [OCALL_DEBUG_MAP_REMOVE]         = sgx_ocall_debug_map_remove,
     [OCALL_DEBUG_DESCRIBE_LOCATION]  = sgx_ocall_debug_describe_location,
     [OCALL_EVENTFD]                  = sgx_ocall_eventfd,
+    [OCALL_IOCTL]                    = sgx_ocall_ioctl,
     [OCALL_GET_QUOTE]                = sgx_ocall_get_quote,
 };
 

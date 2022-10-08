@@ -55,3 +55,10 @@ struct handle_ops g_dev_ops = {
     .attrquery      = &dev_attrquery,
     .attrquerybyhdl = &dev_attrquerybyhdl,
 };
+
+int _PalDeviceIoControl(PAL_HANDLE handle, unsigned int cmd, uint64_t arg) {
+    __UNUSED(handle);
+    __UNUSED(cmd);
+    __UNUSED(arg);
+    return -PAL_ERROR_NOTIMPLEMENTED;
+}

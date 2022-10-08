@@ -1313,6 +1313,12 @@ class TC_80_Socket(RegressionTestCase):
         stdout, _ = self.run_binary(['tcp_ipv6_v6only'], timeout=50)
         self.assertIn('test completed successfully', stdout)
 
+    @unittest.skipIf(USES_MUSL, 'C++ is not supported with musl')
+    def test_320_ioctl(self):
+        stdout, _ = self.run_binary(['ioctl'])
+        self.assertIn('Ip Address 127.0.0.1', stdout)
+        self.assertIn('Device lo -> Ethernet 00:00:00:00:00:00', stdout)
+
 @unittest.skipUnless(HAS_SGX,
     'This test is only meaningful on SGX PAL because only SGX emulates CPUID.')
 class TC_90_CpuidSGX(RegressionTestCase):
