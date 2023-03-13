@@ -136,11 +136,20 @@ long libos_syscall_ioctl(unsigned int fd, unsigned int cmd, unsigned long arg) {
         case SIOCGIFHWADDR:
             if (hdl->type == TYPE_SOCK) {
                 /* LibOS doesn't know how to handle this IOCTL, forward it to the host */
-                ret = PalDeviceIoControl(hdl->pal_handle, cmd, arg);
-                if (ret < 0)
+                int cmd_ret;
+                ret = PalDeviceIoControl(hdl->pal_handle, cmd, arg, &cmd_ret);
+                if (ret < 0) {
                     ret = pal_to_unix_errno(ret);
+                    break;
+                }
+
+                assert(ret == 0);
+                ret = cmd_ret;
+            } else {
+                ret = -ENOSYS;
             }
             break;
+
         default:
             ret = -ENOSYS;
             break;

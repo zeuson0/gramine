@@ -1,6 +1,7 @@
 loader.entrypoint = "file:{{ gramine.libos }}"
 libos.entrypoint = "{{ entrypoint }}"
 loader.argv0_override = "{{ entrypoint }}"
+loader.log_level = "all"
 
 loader.env.LD_LIBRARY_PATH = "/lib:{{ arch_libdir }}:/usr/{{ arch_libdir }}"
 loader.insecure__use_cmdline_argv = true
@@ -23,13 +24,12 @@ fs.mounts = [
 ]
 
 #sgx.ioctl_structs.ifconf  = [ {name = "ifc_len",size = 8, align = 8, type= "out" }, { ptr=[ {name="ifcu_req", size= "ifc_len", type="inout"} ] } ]
-sgx.ioctl_structs.ifconf = [ {name = "ifc_len",size = 4, align = 4, type= "inout" }, {size = 4, type= "inout"}, { ptr=[ {name="ifcu_req", size= "ifc_len", type="in"} ] } ]
-sgx.allowed_ioctls.io1.request = 0x8912
-sgx.allowed_ioctls.io1.struct = "ifconf"
-
-sgx.ioctl_structs.ifreq = [ {  name ="ifreq", size=40, type="inout"} ]
-sgx.allowed_ioctls.io2.request = 0x8927
-sgx.allowed_ioctls.io2.struct = "ifreq"
+sgx.ioctl_structs.ifconf = [ {name = "ifc_len",size = 4, direction = "inout" }, {size = 4}, { ptr=[ {size= "ifc_len", direction = "in"} ] } ]
+sgx.ioctl_structs.ifreq = [ {  name ="ifreq", size=40, direction ="inout"} ]
+sgx.allowed_ioctls = [
+  { request_code = 0x8912, struct = "ifconf"},
+  { request_code = 0x8927, struct = "ifreq"},
+]
 
 sgx.thread_num = 16
 sgx.nonpie_binary = true
