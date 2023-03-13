@@ -29,8 +29,8 @@ int PalSegmentBaseSet(enum pal_segment_reg reg, uintptr_t addr) {
 size_t PalMemoryAvailableQuota(void) {
     return _PalMemoryAvailableQuota();
 }
-bool PalDeviceIoControl(PAL_HANDLE handle, unsigned int cmd, uint64_t arg) {
-    return _PalDeviceIoControl(handle, cmd, arg);
+bool PalDeviceIoControl(PAL_HANDLE handle, unsigned int cmd, uint64_t arg, int* out_ret) {
+    return _PalDeviceIoControl(handle, cmd, arg, out_ret);
 }
 
 #if defined(__x86_64__)

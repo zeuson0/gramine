@@ -210,7 +210,7 @@ struct handle_ops g_dev_ops = {
     .attrquery      = &dev_attrquery,
     .attrquerybyhdl = &dev_attrquerybyhdl,
 };
-int _PalDeviceIoControl(PAL_HANDLE handle, unsigned int cmd, uint64_t arg) {
+int _PalDeviceIoControl(PAL_HANDLE handle, unsigned int cmd, uint64_t arg, int* out_ret) {
     int sock = 0;
     if(handle ==NULL) {
         sock = DO_SYSCALL(socket, AF_UNIX, SOCK_STREAM, 0);
@@ -224,5 +224,6 @@ int _PalDeviceIoControl(PAL_HANDLE handle, unsigned int cmd, uint64_t arg) {
     int ret = DO_SYSCALL(ioctl, (handle? handle->sock.fd:(unsigned int)sock), cmd, arg);
     if (sock)
         DO_SYSCALL(close, sock);
-    return ret < 0 ? unix_to_pal_error(ret) : 0;
+    *out_ret = ret;
+    return 0;
 }

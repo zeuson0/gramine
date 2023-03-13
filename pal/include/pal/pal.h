@@ -878,7 +878,7 @@ size_t PalMemoryAvailableQuota(void);
  *
  * \return Returns 1 on success, 0 on failure. Use PAL_ERRNO() to get the actual error code.
  */
-bool PalDeviceIoControl(PAL_HANDLE handle, unsigned int cmd, uint64_t arg);
+bool PalDeviceIoControl(PAL_HANDLE handle, unsigned int cmd, uint64_t arg, int* out_ret);
 
 /*!
  * \brief Obtain the attestation report (local) with `user_report_data` embedded into it.

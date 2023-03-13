@@ -18,7 +18,7 @@ cflags_pal_sgx = [
     '-DHOST_TYPE=Linux-SGX',
     # Some of the code uses `alignof` on expressions, which is a GNU extension. Silence Clang - it
     # complains but does support it.
-    '-Wno-gnu-alignof-expression',
+    #'-Wno-gnu-alignof-expression',
 ]
 
 pal_sgx_generated_offsets_print = executable('pal-sgx-generated-offsets-print',
