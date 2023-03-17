@@ -158,7 +158,7 @@ noreturn void pal_main(uint64_t instance_id, PAL_HANDLE parent_process, PAL_HAND
 
 /* For initialization */
 
-void _PalGetAvailableUserAddressRange(void** out_start, void** out_end);
+void _PalGetAvailableUserAddressRange(void** out_start, void** out_end, void** shared_start, void** shared_end);
 bool _PalCheckMemoryMappable(const void* addr, size_t size);
 unsigned long _PalMemoryQuota(void);
 unsigned long _PalMemoryAvailableQuota(void);

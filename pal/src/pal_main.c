@@ -575,7 +575,9 @@ noreturn void pal_main(uint64_t instance_id,       /* current instance id */
     g_pal_public_state.disable_aslr    = disable_aslr;
 
     _PalGetAvailableUserAddressRange(&g_pal_public_state.user_address_start,
-                                     &g_pal_public_state.user_address_end);
+                                     &g_pal_public_state.user_address_end,
+                                     &g_pal_public_state.shared_address_start,
+                                     &g_pal_public_state.shared_address_end);
 
     if (_PalGetCPUInfo(&g_pal_public_state.cpu_info) < 0) {
         goto out_fail;

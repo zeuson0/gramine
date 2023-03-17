@@ -16,7 +16,10 @@
 #include <stdnoreturn.h>
 
 #include "api.h"
+#include "asan.h"
+#include "assert.h"
 #include "enclave_tf.h"
+#include "gdb_integration/sgx_gdb.h"
 #include "init.h"
 #include "pal.h"
 #include "pal_internal.h"
@@ -38,7 +41,7 @@ size_t g_pal_internal_mem_size = PAL_INITIAL_MEM_SIZE;
 
 const size_t g_page_size = PRESET_PAGESIZE;
 
-void _PalGetAvailableUserAddressRange(void** out_start, void** out_end) {
+void _PalGetAvailableUserAddressRange(void** out_start, void** out_end, void** shared_start, void** shared_end) {
     *out_start = g_pal_linuxsgx_state.heap_min;
     *out_end   = g_pal_linuxsgx_state.heap_max;
 
@@ -51,6 +54,22 @@ void _PalGetAvailableUserAddressRange(void** out_start, void** out_end) {
         log_error("Not enough enclave memory, please increase enclave size!");
         ocall_exit(1, /*is_exitgroup=*/true);
     }
+
+    void* shared_memory_start = (void*)SHARED_ADDR_MIN;
+    int ret = ocall_mmap_untrusted(&shared_memory_start, SHARED_MEM_SIZE, PROT_NONE,
+                               MAP_NORESERVE | MAP_ANONYMOUS | MAP_PRIVATE | MAP_FIXED_NOREPLACE,
+                               /*fd=*/-1, /*offset=*/0);
+    if (ret < 0) {
+        log_error("Cannot allocate shared memory.");
+        ocall_exit(1, /*is_exitgroup=*/true);
+    }
+    if (shared_memory_start != (void*)SHARED_ADDR_MIN) {
+        log_error("Kernel doesn't support MAP_FIXED_NOREPLACE. Update kernel to at least 4.17.");
+        ocall_exit(1, /*is_exitgroup=*/true);
+    }
+
+    *shared_start = shared_memory_start;
+    *shared_end = shared_memory_start + SHARED_MEM_SIZE;
 }
 
 static bool verify_and_init_rpc_queue(void* untrusted_rpc_queue) {
@@ -414,6 +433,7 @@ static int print_warnings_on_insecure_configs(PAL_HANDLE parent_process) {
     bool use_host_env         = false;
     bool disable_aslr         = false;
     bool allow_eventfd        = false;
+    bool allow_shared_memory  = false;
     bool allow_all_files      = false;
     bool use_allowed_files    = g_allowed_files_warn;
     bool protected_files_key  = false;
@@ -453,6 +473,15 @@ static int print_warnings_on_insecure_configs(PAL_HANDLE parent_process) {
     if (ret < 0)
         goto out;
 
+    char* shared_memory_str = NULL;
+    ret = toml_string_in(g_pal_public_state.manifest_root, "sys.insecure__shared_memory",
+                         &shared_memory_str);
+    if (ret < 0)
+        goto out;
+    if (shared_memory_str && !strcmp(shared_memory_str, "passthrough"))
+        allow_shared_memory = true;
+    free(shared_memory_str);
+
     if (get_file_check_policy() == FILE_CHECK_POLICY_ALLOW_ALL_BUT_LOG)
         allow_all_files = true;
 
@@ -477,8 +506,8 @@ static int print_warnings_on_insecure_configs(PAL_HANDLE parent_process) {
     }
 
     if (!verbose_log_level && !sgx_debug && !use_cmdline_argv && !use_host_env && !disable_aslr &&
-            !allow_eventfd && !allow_all_files && !use_allowed_files && !protected_files_key &&
-            !encrypted_files_keys) {
+            !allow_eventfd && !allow_shared_memory && !allow_all_files && !use_allowed_files &&
+            !protected_files_key && !encrypted_files_keys) {
         /* there are no insecure configurations, skip printing */
         ret = 0;
         goto out;
@@ -511,6 +540,10 @@ static int print_warnings_on_insecure_configs(PAL_HANDLE parent_process) {
     if (allow_eventfd)
         log_always("  - sys.insecure__allow_eventfd = true         "
                    "(host-based eventfd is enabled)");
+
+    if (allow_shared_memory)
+        log_always("  - sys.insecure__shared_memory = passthrough  "
+                   "(untrusted shared memory is enabled)");
 
     if (allow_all_files)
         log_always("  - sgx.file_check_policy = allow_all_but_log  "

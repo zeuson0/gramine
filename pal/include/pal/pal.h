@@ -143,7 +143,9 @@ struct pal_public_state {
     bool disable_aslr;        /*!< disable ASLR (may be necessary for restricted environments) */
     void* user_address_start; /*!< User address range start */
     void* user_address_end;   /*!< User address range end */
-
+    void* shared_address_start;             /*!< usable shared memory start address */
+    void* shared_address_end;               /*!< usable shared memory end address */
+ 
     struct {
         uintptr_t start;
         uintptr_t end;
