@@ -37,6 +37,7 @@ enum libos_handle_type {
     TYPE_TMPFS,      /* string-based files (with data inside dentry), used by `tmpfs` filesystem */
     TYPE_SYNTHETIC,  /* synthetic files, used by `synthetic` filesystem */
     TYPE_PATH,       /* path to a file (the file is not actually opened) */
+    TYPE_SHM,        /* shared files, used by `shm` filesystem */
 
     /* Pipes and sockets: */
     TYPE_PIPE,       /* pipes, used by `pipe` filesystem */
@@ -56,7 +57,6 @@ enum libos_file_type {
     FILE_REGULAR,
     FILE_DIR,
     FILE_DEV,
-    FILE_TTY,
 };
 
 #define FILE_HANDLE_DATA(hdl)  ((hdl)->info.file.data)
