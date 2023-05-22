@@ -235,6 +235,22 @@ int PalVirtualMemoryFree(void* addr, size_t size);
  */
 int PalVirtualMemoryProtect(void* addr, size_t size, pal_prot_flags_t prot);
 
+/*!
+ * \brief Perform a socket-specific operation `cmd`.
+ *
+ * \param         handle   Handle of the socket.
+ * \param         cmd      socket-specific request/control code.
+ * \param[in,out] arg      Arbitrary argument to `cmd`. May be unused or used as a 64-bit integer
+ *                         or used as a pointer to a buffer that contains the data required to
+ *                         perform the operation as well as the data returned by the operation.
+ * \param[out]    out_ret  Typically zero.
+ *
+ * \returns 0 on success, negative error value on failure.
+ *
+ * This function corresponds to ioctl() in UNIX systems.
+ */
+int PalSocketIoControl(PAL_HANDLE handle, uint32_t cmd, unsigned long arg, int* out_ret);
+
 /*
  * PROCESS CREATION
  */

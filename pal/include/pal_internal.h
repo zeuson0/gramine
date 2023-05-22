@@ -195,6 +195,7 @@ int _PalSocketSend(PAL_HANDLE handle, struct pal_iovec* iov, size_t iov_len, siz
                    struct pal_socket_addr* addr, bool force_nonblocking);
 int _PalSocketRecv(PAL_HANDLE handle, struct pal_iovec* iov, size_t iov_len, size_t* out_total_size,
                    struct pal_socket_addr* addr, bool force_nonblocking);
+int _PalSocketIoControl(PAL_HANDLE handle, uint32_t cmd, unsigned long arg, int* out_ret);
 
 /* PalProcess and PalThread calls */
 int _PalThreadCreate(PAL_HANDLE* handle, int (*callback)(void*), void* param);

@@ -13,6 +13,7 @@
 #include "libos_process.h"
 #include "libos_signal.h"
 #include "libos_table.h"
+#include "socket_utils.h"
 #include "pal.h"
 
 static void signal_io(IDTYPE caller, void* arg) {
@@ -133,23 +134,26 @@ long libos_syscall_ioctl(unsigned int fd, unsigned int cmd, unsigned long arg) {
             break;
         }
         case SIOCGIFCONF:
-        case SIOCGIFHWADDR:
-            if (hdl->type == TYPE_SOCK) {
-                /* LibOS doesn't know how to handle this IOCTL, forward it to the host */
-                int cmd_ret;
-                ret = PalDeviceIoControl(hdl->pal_handle, cmd, arg, &cmd_ret);
-                if (ret < 0) {
-                    ret = pal_to_unix_errno(ret);
-                    break;
-                }
+            /* fallthrough */
+        case SIOCGIFHWADDR:{
+            if (!is_user_memory_writable((void*)arg, sizeof(int))) {
+                ret = -EFAULT;
+                break;
+            }
 
-                assert(ret == 0);
-                ret = cmd_ret;
+            struct libos_fs* fs = hdl->fs;
+            if (!fs || !fs->fs_ops) {
+                ret = -ENOTTY;
+                break;
+            }
+
+            if (fs->fs_ops->ioctl) {
+                ret = fs->fs_ops->ioctl(hdl, cmd, arg);
             } else {
                 ret = -ENOSYS;
             }
             break;
-
+        }
         default:
             ret = -ENOSYS;
             break;
