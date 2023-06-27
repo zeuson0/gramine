@@ -208,6 +208,7 @@ typedef struct {
     struct sockaddr* ms_addr;
     size_t ms_addrlen;
     uint16_t ms_new_port;
+    uint32_t new_nl_pid;
 } ms_ocall_bind_t;
 
 typedef struct {
