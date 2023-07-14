@@ -62,7 +62,7 @@ long libos_syscall_getpgrp(void) {
 
 long libos_syscall_setsid(void) {
     /* TODO: currently we do not support session management. */
-    return -ENOSYS;
+    return g_process.pid;
 }
 
 long libos_syscall_getsid(pid_t pid) {

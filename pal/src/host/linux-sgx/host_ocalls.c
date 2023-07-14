@@ -334,6 +334,10 @@ static long sgx_ocall_bind(void* pms) {
             memcpy(&ms->ms_new_port, (char*)&addr + offsetof(struct sockaddr_in6, sin6_port),
                    sizeof(ms->ms_new_port));
             break;
+        case AF_NETLINK:
+            memcpy(&ms->new_nl_pid, (char*)&addr + offsetof(struct sockaddr_nl, nl_pid),
+                   sizeof(ms->new_nl_pid));
+            break;
         default:
             log_error("%s: unknown address family: %d", __func__, addr.ss_family);
             DO_SYSCALL(exit_group, 1);

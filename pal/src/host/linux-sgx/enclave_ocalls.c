@@ -1114,7 +1114,8 @@ out:
     return ret;
 }
 
-int ocall_bind(int fd, struct sockaddr_storage* addr, size_t addrlen, uint16_t* out_new_port) {
+int ocall_bind(int fd, struct sockaddr_storage* addr, size_t addrlen, uint16_t* out_new_port,
+               uint32_t* out_new_nl_pid) {
     int ret;
     void* old_ustack = sgx_prepare_ustack();
     ms_ocall_bind_t* ms = sgx_alloc_on_ustack_aligned(sizeof(*ms), alignof(*ms));
@@ -1145,13 +1146,32 @@ int ocall_bind(int fd, struct sockaddr_storage* addr, size_t addrlen, uint16_t* 
         goto out;
     }
 
-    uint16_t new_port = COPY_UNTRUSTED_VALUE(&ms->ms_new_port);
-    if (new_port == 0) {
-        ret = -EPERM;
-        goto out;
+    uint16_t new_port;
+    uint32_t new_nl_pid;
+    switch (ms->ms_addr->sa_family) {
+        case AF_INET:
+        case AF_INET6:
+            new_port = COPY_UNTRUSTED_VALUE(&ms->ms_new_port);
+            if (new_port == 0) {
+                ret = -EPERM;
+                goto out;
+            }
+            *out_new_port = new_port;
+            break;
+        case AF_NETLINK:
+            new_nl_pid = COPY_UNTRUSTED_VALUE(&ms->new_nl_pid);
+            if (new_nl_pid == 0) {
+                ret = -EPERM;
+                goto out;
+            }
+            *out_new_nl_pid = new_nl_pid;
+            break;
+        default:
+            log_error("unknown address family: %d", ms->ms_addr->sa_family);
+            ret = -EPERM;
+            goto out;
     }
 
-    *out_new_port = new_port;
     ret = 0;
 
 out:
