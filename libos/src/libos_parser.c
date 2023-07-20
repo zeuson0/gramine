@@ -1147,7 +1147,11 @@ static void parse_sockaddr(struct print_buf* buf, va_list* ap) {
             buf_printf(buf, "{family=UNIX,path=%s}", a->sun_path);
             break;
         }
-
+        case AF_NETLINK: {
+            struct sockaddr_nl* sa_nl = (void*)addr;
+            buf_printf(buf, "{family=NETLINK,pid=%d,groups=%d}", sa_nl->nl_pid, sa_nl->nl_groups);
+            break;
+        }
         default:
             buf_puts(buf, "UNKNOWN");
             break;
