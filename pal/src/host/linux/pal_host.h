@@ -81,6 +81,7 @@ typedef struct {
             bool tcp_cork;
             bool tcp_nodelay;
             bool ipv6_v6only;
+            bool ip_multicast_all;
         } sock;
 
         struct {

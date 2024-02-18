@@ -78,6 +78,7 @@ static PAL_HANDLE create_sock_handle(int fd, enum pal_socket_domain domain,
     handle->sock.tcp_cork = false;
     handle->sock.tcp_nodelay = false;
     handle->sock.ipv6_v6only = false;
+    handle->sock.ip_multicast_all = false;
 
     return handle;
 }
@@ -351,6 +352,7 @@ static int attrquerybyhdl(PAL_HANDLE handle, PAL_STREAM_ATTR* attr) {
     attr->socket.tcp_cork = handle->sock.tcp_cork;
     attr->socket.tcp_nodelay = handle->sock.tcp_nodelay;
     attr->socket.ipv6_v6only = handle->sock.ipv6_v6only;
+    attr->socket.ip_multicast_all = handle->sock.ip_multicast_all;
 
     return 0;
 };
@@ -485,6 +487,16 @@ static int attrsetbyhdl_common(PAL_HANDLE handle, PAL_STREAM_ATTR* attr) {
             return unix_to_pal_error(ret);
         }
         handle->sock.ipv6_v6only = attr->socket.ipv6_v6only;
+    }
+
+    if (attr->socket.ip_multicast_all != handle->sock.ip_multicast_all) {
+        int val = attr->socket.ip_multicast_all;
+        int ret =
+            DO_SYSCALL(setsockopt, handle->sock.fd, IPPROTO_IPV6, IP_MULTICAST_ALL, &val, sizeof(val));
+        if (ret < 0) {
+            return unix_to_pal_error(ret);
+        }
+        handle->sock.ip_multicast_all = attr->socket.ip_multicast_all;
     }
 
     return 0;

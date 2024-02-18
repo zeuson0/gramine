@@ -318,6 +318,9 @@ static int set_ipv6_option(struct libos_handle* handle, int optname, void* optva
         case IPV6_RECVERR:
             /* See the comment in `set_ipv4_option` for why we handle it this way. */
             return 0;
+        case IP_MULTICAST_ALL:
+            attr.socket.ip_multicast_all = !!*(int*)optval;
+            break;
         default:
             return -ENOPROTOOPT;
     }
@@ -528,6 +531,9 @@ static int get_ipv6_option(struct libos_handle* handle, int optname, void* optva
     switch (optname) {
         case IPV6_V6ONLY:
             val = attr.socket.ipv6_v6only;
+            break;
+        case IP_MULTICAST_ALL:
+            val = attr.socket.ip_multicast_all;
             break;
         default:
             return -ENOPROTOOPT;
