@@ -82,6 +82,7 @@ typedef struct {
             bool tcp_nodelay;
             bool ipv6_v6only;
             bool ip_multicast_all;
+            bool ipv6_multicast_hops;
         } sock;
 
         struct {

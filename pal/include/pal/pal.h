@@ -481,6 +481,7 @@ typedef struct _PAL_STREAM_ATTR {
             bool tcp_nodelay;
             bool ipv6_v6only;
             bool ip_multicast_all;
+            bool ipv6_multicast_hops;
         } socket;
     };
 } PAL_STREAM_ATTR;
